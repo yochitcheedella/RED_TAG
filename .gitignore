@@ -1,0 +1,9 @@
+node_modules/
+.env
+backend/node_modules/
+frontend/node_modules/
+frontend/dist/
+java-service/bin/
+backend/uploads/
+*.log
+.DS_Store

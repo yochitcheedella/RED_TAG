@@ -1,0 +1,25 @@
+{
+  "name": "redtag-backend",
+  "version": "1.0.0",
+  "description": "Red Tag Area Monitoring System Backend - Node.js + Express + SQLite + SerialPort + Socket.IO",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@serialport/parser-readline": "^12.0.0",
+    "archiver": "^8.0.0",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "nodemailer": "^10.0.10",
+    "serialport": "^12.0.0",
+    "sharp": "^0.33.5",
+    "socket.io": "^4.7.5",
+    "uuid": "^10.0.0"
+  }
+}

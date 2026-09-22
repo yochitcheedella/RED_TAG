@@ -1,0 +1,19 @@
+{
+  "name": "redtag-surveillance-system",
+  "version": "1.0.0",
+  "description": "Real-Time Red Tag Area Surveillance & RFID Authorization System",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compile:java": "node scripts/compile-java.js",
+    "start:java": "node scripts/compile-java.js && java -cp java-service/bin com.redtag.Main",
+    "start:backend": "npm --prefix backend run dev",
+    "start:frontend": "npm --prefix frontend run dev",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"JAVA,BACKEND,FRONTEND\" -c \"magenta.bold,blue.bold,cyan.bold\" \"npm run start:java\" \"npm run start:backend\" \"npm run start:frontend\"",
+    "start": "npm run dev",
+    "test": "node backend/tests/acceptance_test.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

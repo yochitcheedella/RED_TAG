@@ -1,0 +1,44 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Java: Red Tag Core Engine",
+      "type": "java",
+      "request": "launch",
+      "mainClass": "com.redtag.Main",
+      "projectName": "java-service",
+      "cwd": "${workspaceFolder}/java-service",
+      "classPaths": ["${workspaceFolder}/java-service/bin"],
+      "preLaunchTask": "Build Java Core"
+    },
+    {
+      "name": "Node: Express & Reporting Hub",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["src/server.js"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "React: Vite Dev Server",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "${workspaceFolder}/frontend",
+      "console": "integratedTerminal"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "🚀 Launch All Services (Java + Node + React)",
+      "configurations": [
+        "Java: Red Tag Core Engine",
+        "Node: Express & Reporting Hub",
+        "React: Vite Dev Server"
+      ],
+      "stopAll": true
+    }
+  ]
+}

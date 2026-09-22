@@ -1,0 +1,56 @@
+{
+  "camera": {
+    "optical_zoom_level": "2.4x",
+    "target_focus": "Silver Rack and Red Tag Wall Sign",
+    "resolution": {
+      "width": 640,
+      "height": 480
+    },
+    "fps": 25
+  },
+  "floor_tape_roi": {
+    "name": "Physical Red-and-Blue Floor Tape Polygon",
+    "tape_colors": [
+      "#ef4444",
+      "#3b82f6"
+    ],
+    "polygon_vertices": [
+      {
+        "x": 130,
+        "y": 180
+      },
+      {
+        "x": 510,
+        "y": 180
+      },
+      {
+        "x": 560,
+        "y": 440
+      },
+      {
+        "x": 80,
+        "y": 440
+      }
+    ],
+    "ground_plane_calibration": {
+      "contact_point": "BOTTOM_CENTER_FOOTPRINT",
+      "formula": "P_footprint = [x_center, y_bottom]"
+    }
+  },
+  "corridor_exclusion": {
+    "name": "Pedestrian & AGV Corridor",
+    "boundary_y_max": 160,
+    "ignore_classes": [
+      "person",
+      "agv",
+      "forklift_transit"
+    ]
+  },
+  "thresholds": {
+    "stationary_debounce_ms": 5000,
+    "velocity_reset_threshold_px_s": 12,
+    "rfid_correlation_window_ms": 3000,
+    "new_to_old_settlement_ms": 30000,
+    "occlusion_grace_period_ms": 8000
+  }
+}
