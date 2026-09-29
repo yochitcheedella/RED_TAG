@@ -160,7 +160,8 @@ router.post('/kiosk/register-item', (req, res) => {
     return res.status(403).json({ error: 'Valid authorized employee RFID required.' });
   }
 
-  const durationMinutes = Math.max(1, Math.min(120, parseInt(duration_min || 5, 10)));
+  // Allow customizable placement duration from 1 minute up to 30 days (43,200 min)
+  const durationMinutes = Math.max(1, Math.min(43200, parseInt(duration_min || 5, 10)));
   const registration = createKioskRegistration({
     rfid_uid: cleanUID,
     employee_id: emp.id,

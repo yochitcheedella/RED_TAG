@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CreditCard, CheckCircle2, Clock, AlertTriangle, ShieldCheck, Lock, RotateCcw, Package, ArrowRight, Sparkles } from 'lucide-react';
 
-const DURATION_OPTIONS = [
-  { value: 5, label: '5 Minutes' },
-  { value: 10, label: '10 Minutes' },
-  { value: 15, label: '15 Minutes' },
-  { value: 30, label: '30 Minutes' },
-  { value: 60, label: '1 Hour' }
+const DURATION_PRESETS = [
+  { value: 5, label: '5 Min' },
+  { value: 15, label: '15 Min' },
+  { value: 30, label: '30 Min' },
+  { value: 60, label: '1 Hour' },
+  { value: 1440, label: '24 Hours' },
+  { value: 10080, label: '7 Days' }
 ];
 
 export default function KioskView({ socket, onOpenAdmin }) {
@@ -17,6 +18,11 @@ export default function KioskView({ socket, onOpenAdmin }) {
 
   // Verified Employee Data (Temporary, in-memory only — never stored in localStorage)
   const [verifiedEmployee, setVerifiedEmployee] = useState(null);
+
+  // Customizable Placement Duration State
+  const [isCustomDuration, setIsCustomDuration] = useState(false);
+  const [customValue, setCustomValue] = useState(45);
+  const [customUnit, setCustomUnit] = useState('minutes'); // 'minutes' | 'hours' | 'days'
 
   // Item Details Form State
   const [formData, setFormData] = useState({
@@ -45,6 +51,9 @@ export default function KioskView({ socket, onOpenAdmin }) {
 
     setStep('WAITING_RFID');
     setVerifiedEmployee(null);
+    setIsCustomDuration(false);
+    setCustomValue(45);
+    setCustomUnit('minutes');
     setFormData({
       item_name: '',
       serial_number: '',
@@ -236,10 +245,20 @@ export default function KioskView({ socket, onOpenAdmin }) {
     }, 1000);
   };
 
-  // Format MM:SS
+  // Format countdown clock dynamically (Seconds, Minutes, Hours, Days)
   const formatTime = (totalSeconds) => {
-    const mins = Math.floor(totalSeconds / 60);
+    if (totalSeconds <= 0) return '00:00';
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
     const secs = totalSeconds % 60;
+
+    if (days > 0) {
+      return `${days}d ${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m`;
+    }
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
@@ -572,29 +591,120 @@ export default function KioskView({ socket, onOpenAdmin }) {
                 </div>
 
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0', marginBottom: '6px' }}>
-                    Placement Time
-                  </label>
-                  <select
-                    value={formData.duration_min}
-                    onChange={(e) => setFormData({ ...formData, duration_min: parseInt(e.target.value, 10) })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: 'rgba(15, 23, 42, 0.9)',
-                      border: '1px solid rgba(255, 255, 255, 0.15)',
-                      color: '#FFF',
-                      fontSize: '0.9rem',
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                    {DURATION_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0' }}>
+                      Placement Time
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !isCustomDuration;
+                        setIsCustomDuration(next);
+                        if (!next) {
+                          setFormData(prev => ({ ...prev, duration_min: 5 }));
+                        } else {
+                          const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
+                        }
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#60A5FA',
+                        fontSize: '0.72rem',
+                        cursor: 'pointer',
+                        padding: 0,
+                        textDecoration: 'underline'
+                      }}
+                    >
+                      {isCustomDuration ? 'Use Presets' : 'Custom Time'}
+                    </button>
+                  </div>
+
+                  {!isCustomDuration ? (
+                    <select
+                      value={formData.duration_min}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'custom') {
+                          setIsCustomDuration(true);
+                          const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
+                        } else {
+                          setFormData(prev => ({ ...prev, duration_min: parseInt(val, 10) }));
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        background: 'rgba(15, 23, 42, 0.9)',
+                        border: '1px solid rgba(255, 255, 255, 0.15)',
+                        color: '#FFF',
+                        fontSize: '0.9rem',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      {DURATION_PRESETS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                      <option value="custom">Custom Duration...</option>
+                    </select>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        value={customValue}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value || '1', 10));
+                          setCustomValue(val);
+                          const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                          setFormData(prev => ({ ...prev, duration_min: val * multiplier }));
+                        }}
+                        style={{
+                          width: '75px',
+                          padding: '10px 10px',
+                          borderRadius: '8px',
+                          background: 'rgba(0, 0, 0, 0.35)',
+                          border: '1px solid rgba(255, 255, 255, 0.2)',
+                          color: '#FFF',
+                          fontSize: '0.9rem',
+                          textAlign: 'center'
+                        }}
+                      />
+                      <select
+                        value={customUnit}
+                        onChange={(e) => {
+                          const unit = e.target.value;
+                          setCustomUnit(unit);
+                          const multiplier = unit === 'days' ? 1440 : unit === 'hours' ? 60 : 1;
+                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          background: 'rgba(15, 23, 42, 0.9)',
+                          border: '1px solid rgba(255, 255, 255, 0.2)',
+                          color: '#FFF',
+                          fontSize: '0.85rem'
+                        }}
+                      >
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                        <option value="days">Days</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '4px' }}>
+                    Active window: <strong style={{ color: '#38BDF8' }}>{formData.duration_min} minutes</strong>
+                    {formData.duration_min >= 60 && ` (${(formData.duration_min / 60).toFixed(1)} hrs)`}
+                  </div>
                 </div>
               </div>
 
