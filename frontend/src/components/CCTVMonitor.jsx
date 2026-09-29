@@ -837,9 +837,10 @@ export default function CCTVMonitor({
       }
       const scale = renderW / vw;
 
-      // Classes to ignore (humans and wild animals/vehicles)
+      // Classes to ignore (humans, carpet/floor false positives like bed/couch, wild animals/vehicles)
       const ignoredClasses = new Set([
-        'person', 'elephant', 'zebra', 'giraffe', 'bear', 'horse', 'cow', 'sheep',
+        'person', 'bed', 'couch', 'sofa', 'bench', 'dining table', 'toilet', 'sink',
+        'elephant', 'zebra', 'giraffe', 'bear', 'horse', 'cow', 'sheep',
         'airplane', 'train', 'boat', 'bus', 'truck'
       ]);
 
@@ -976,8 +977,8 @@ export default function CCTVMonitor({
           const candW = Math.round((cwBox / roiCanvas.width) * roiW);
           const candH = Math.round((chBox / roiCanvas.height) * roiH);
 
-          // Reject boxes covering virtually the entire cropped ROI canvas
-          if (cwBox >= roiCanvas.width * 0.96 && chBox >= roiCanvas.height * 0.96) continue;
+          // Reject boxes covering large portions of the ROI (carpet/floor misidentified as large objects)
+          if (candW > roiW * 0.70 || candH > roiH * 0.70 || candW > 380 || candH > 320) continue;
 
           const candX = Math.round(roiMinX + (cx / roiCanvas.width) * roiW);
           const candY = Math.round(roiMinY + (cy / roiCanvas.height) * roiH);
