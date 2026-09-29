@@ -1416,6 +1416,7 @@ export default function CCTVMonitor({
 
                   if (tracker.authorized) {
                     sounds.playAuthorized();
+                    onUnauthorizedAlertRef.current?.(null);
                   } else {
                     sounds.playUnauthorizedAlert();
                     onUnauthorizedAlertRef.current?.({

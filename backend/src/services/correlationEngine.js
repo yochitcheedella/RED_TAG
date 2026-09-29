@@ -1,7 +1,7 @@
 import { rfidService } from './rfidService.js';
 import { reportingService } from './reportingService.js';
 import { mailQueueService } from './mailQueueService.js';
-import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration } from '../db.js';
+import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration, getAnyPendingKioskRegistration } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -190,16 +190,29 @@ class CorrelationEngine {
     let timeDifference = null;
     let notes = '';
 
+    // Priority 1: Check if an active Kiosk placement session is in progress (Rule: Active Placement Session)
+    const kioskReg = getAnyPendingKioskRegistration();
     const activeToken = rfidService.getActiveToken();
 
-    if (activeToken) {
+    if (kioskReg && new Date(kioskReg.expires_at).getTime() > now) {
+      // CASE 0: KIOSK-REGISTERED AUTHORIZED PLACEMENT
+      isAuthorized = true;
+      authStatus = 'AUTHORIZED';
+      rfidUID = kioskReg.rfid_uid;
+      employeeId = kioskReg.employee_id;
+      employeeName = kioskReg.employee_name;
+      timeDifference = ((now - new Date(kioskReg.created_at).getTime()) / 1000).toFixed(1);
+      notes = `Authorized Kiosk placement: ${kioskReg.item_name} by ${employeeName} (${rfidUID})`;
+      console.log(`📋 [CorrelationEngine] Matched active Kiosk session: "${kioskReg.item_name}" for ${employeeName} (${rfidUID})`);
+      rfidService.consumeToken();
+    } else if (activeToken) {
       rfidUID = activeToken.uid;
       employeeId = activeToken.employee_id || null;
       employeeName = activeToken.employee_name;
       timeDifference = ((now - activeToken.scanned_at) / 1000).toFixed(1);
 
       if (activeToken.is_authorized && now <= activeToken.expires_at) {
-        // CASE 1: AUTHORIZED PLACEMENT (Section 81 & 93)
+        // CASE 1: AUTHORIZED PLACEMENT VIA DIRECT BADGE SCAN (Section 81 & 93)
         isAuthorized = true;
         authStatus = 'AUTHORIZED';
         // In industrial operations, an authorized badge tap grants an active drop-off window (default: 60s).
@@ -287,8 +300,7 @@ class CorrelationEngine {
     const eventType = isAuthorized ? 'AUTHORIZED_PLACEMENT' : 'UNAUTHORIZED_PLACEMENT';
     const alertStatus = isAuthorized ? 'NO_ALERT' : 'ALERT_TRIGGERED';
 
-    // Check if there is an active kiosk item registration for this RFID
-    const kioskReg = isAuthorized ? getActiveKioskRegistration(rfidUID) : null;
+    // Populate item metadata from the active kiosk registration (or placement data)
     const finalItemName = kioskReg?.item_name || placementData.objectType || 'Object';
     const finalSerialNo = kioskReg?.serial_number || null;
     const finalDescription = kioskReg?.description || null;
