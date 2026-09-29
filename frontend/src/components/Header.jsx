@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Radio, Video, AlertTriangle, FileText, BarChart3, Settings, Shield, User, Users, Volume2, VolumeX } from 'lucide-react';
+import { Camera, Radio, Video, AlertTriangle, FileText, BarChart3, Settings, Shield, User, Users, Volume2, VolumeX, Package, LogOut } from 'lucide-react';
 import { sounds } from '../utils/audio';
 
 export default function Header({
@@ -8,6 +8,7 @@ export default function Header({
   activeTab,
   setActiveTab,
   onOpenSettings,
+  onLogoutToKiosk,
   cameraActive = false,
   alertsCount = 0,
   userRole = 'admin',
@@ -58,6 +59,7 @@ export default function Header({
   // Operator: Live Monitor, Alerts, Events
   // Admin & Developer: Operator + Reports + Settings
   const baseNavItems = [
+    { id: 'placements', label: 'Placements', icon: Package },
     { id: 'monitor', label: 'Live Monitor', icon: Video },
     { id: 'alerts', label: 'Alerts', icon: AlertTriangle, badge: alertsCount > 0 ? alertsCount : null },
     { id: 'events', label: 'Events', icon: FileText },
@@ -328,6 +330,29 @@ export default function Header({
             <option value="developer">Developer</option>
           </select>
         </div>
+
+        {/* Return to Kiosk */}
+        {onLogoutToKiosk && (
+          <button
+            onClick={onLogoutToKiosk}
+            className="btn btn-outline btn-xs"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              color: '#DC2626',
+              borderColor: 'rgba(220, 38, 38, 0.4)',
+              padding: '6px 12px',
+              fontWeight: 700,
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(220, 38, 38, 0.05)'
+            }}
+            title="Lock and return to Employee Kiosk screen"
+          >
+            <LogOut size={13} />
+            <span>Kiosk Mode</span>
+          </button>
+        )}
       </div>
     </header>
   );

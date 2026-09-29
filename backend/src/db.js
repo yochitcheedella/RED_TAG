@@ -119,6 +119,25 @@ db.exec(`
     payload TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS kiosk_registrations (
+    id TEXT PRIMARY KEY,
+    rfid_uid TEXT NOT NULL,
+    employee_id TEXT,
+    employee_name TEXT,
+    department TEXT,
+    item_name TEXT NOT NULL,
+    serial_number TEXT,
+    description TEXT,
+    reason TEXT,
+    duration_min INTEGER DEFAULT 5,
+    status TEXT DEFAULT 'PENDING_PLACEMENT',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
+    placed_at DATETIME,
+    event_id TEXT,
+    object_id TEXT
+  );
 `);
 
 // Migration to ensure existing DB files get new columns if they don't exist
@@ -130,6 +149,22 @@ try {
   if (!existingCols.includes('camera_id')) db.exec(`ALTER TABLE events ADD COLUMN camera_id TEXT DEFAULT 'CAM-01-REDTAG';`);
   if (!existingCols.includes('object_id')) db.exec(`ALTER TABLE events ADD COLUMN object_id TEXT;`);
   if (!existingCols.includes('object_state')) db.exec(`ALTER TABLE events ADD COLUMN object_state TEXT DEFAULT 'PRESENT';`);
+  if (!existingCols.includes('item_name')) db.exec(`ALTER TABLE events ADD COLUMN item_name TEXT;`);
+  if (!existingCols.includes('serial_number')) db.exec(`ALTER TABLE events ADD COLUMN serial_number TEXT;`);
+  if (!existingCols.includes('description')) db.exec(`ALTER TABLE events ADD COLUMN description TEXT;`);
+  if (!existingCols.includes('placement_reason')) db.exec(`ALTER TABLE events ADD COLUMN placement_reason TEXT;`);
+  if (!existingCols.includes('placement_duration_min')) db.exec(`ALTER TABLE events ADD COLUMN placement_duration_min INTEGER DEFAULT 5;`);
+  if (!existingCols.includes('department')) db.exec(`ALTER TABLE events ADD COLUMN department TEXT;`);
+  if (!existingCols.includes('registered_at')) db.exec(`ALTER TABLE events ADD COLUMN registered_at DATETIME;`);
+
+  const existingObjCols = db.prepare(`PRAGMA table_info(objects)`).all().map(c => c.name);
+  if (!existingObjCols.includes('item_name')) db.exec(`ALTER TABLE objects ADD COLUMN item_name TEXT;`);
+  if (!existingObjCols.includes('serial_number')) db.exec(`ALTER TABLE objects ADD COLUMN serial_number TEXT;`);
+  if (!existingObjCols.includes('description')) db.exec(`ALTER TABLE objects ADD COLUMN description TEXT;`);
+  if (!existingObjCols.includes('placement_reason')) db.exec(`ALTER TABLE objects ADD COLUMN placement_reason TEXT;`);
+  if (!existingObjCols.includes('placement_duration_min')) db.exec(`ALTER TABLE objects ADD COLUMN placement_duration_min INTEGER DEFAULT 5;`);
+  if (!existingObjCols.includes('department')) db.exec(`ALTER TABLE objects ADD COLUMN department TEXT;`);
+  if (!existingObjCols.includes('registered_at')) db.exec(`ALTER TABLE objects ADD COLUMN registered_at DATETIME;`);
 
   const existingAlertCols = db.prepare(`PRAGMA table_info(alerts)`).all().map(c => c.name);
   if (!existingAlertCols.includes('mail_job_id')) db.exec(`ALTER TABLE alerts ADD COLUMN mail_job_id TEXT;`);
@@ -164,7 +199,9 @@ const defaultSettings = {
   baud_rate: '9600',
   camera_mode: 'webcam',
   capture_authorized_evidence: 'true',
-  alert_email_recipient: 'yochitcheedella@gmail.com'
+  alert_email_recipient: 'yochitcheedella@gmail.com',
+  admin_username: 'admin',
+  admin_password: 'admin123'
 };
 
 for (const [key, val] of Object.entries(defaultSettings)) {
@@ -226,8 +263,9 @@ export function logEvent(eventData) {
     INSERT INTO events (
       id, timestamp, event_type, rfid_uid, employee_id, employee_name,
       object_type, object_id, object_state, authorization_status, alert_status, confidence,
-      time_difference, evidence_image, camera_id, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      time_difference, evidence_image, camera_id, notes,
+      item_name, serial_number, description, placement_reason, placement_duration_min, department, registered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const timestamp = eventData.timestamp || new Date().toISOString();
   stmt.run(
@@ -246,7 +284,14 @@ export function logEvent(eventData) {
     eventData.time_difference !== undefined ? eventData.time_difference : null,
     eventData.evidence_image || null,
     eventData.camera_id || 'CAM-01-REDTAG',
-    eventData.notes || null
+    eventData.notes || null,
+    eventData.item_name || null,
+    eventData.serial_number || null,
+    eventData.description || null,
+    eventData.placement_reason || null,
+    eventData.placement_duration_min !== undefined ? eventData.placement_duration_min : 5,
+    eventData.department || null,
+    eventData.registered_at || null
   );
 
   // Section 31: Sync to normalized tables
@@ -526,8 +571,9 @@ export function registerObject(obj) {
     INSERT INTO objects (
       id, event_id, object_type, rfid_uid, employee_id, employee_name,
       authorization_status, state, bounding_box, evidence_image, camera_id,
-      first_seen, last_seen
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      first_seen, last_seen,
+      item_name, serial_number, description, placement_reason, placement_duration_min, department, registered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       event_id = excluded.event_id,
       object_type = excluded.object_type,
@@ -538,7 +584,14 @@ export function registerObject(obj) {
       state = excluded.state,
       last_seen = excluded.last_seen,
       bounding_box = excluded.bounding_box,
-      evidence_image = excluded.evidence_image
+      evidence_image = excluded.evidence_image,
+      item_name = COALESCE(excluded.item_name, objects.item_name),
+      serial_number = COALESCE(excluded.serial_number, objects.serial_number),
+      description = COALESCE(excluded.description, objects.description),
+      placement_reason = COALESCE(excluded.placement_reason, objects.placement_reason),
+      placement_duration_min = COALESCE(excluded.placement_duration_min, objects.placement_duration_min),
+      department = COALESCE(excluded.department, objects.department),
+      registered_at = COALESCE(excluded.registered_at, objects.registered_at)
   `);
   const now = new Date().toISOString();
   stmt.run(
@@ -554,9 +607,100 @@ export function registerObject(obj) {
     obj.evidence_image || null,
     obj.camera_id || 'CAM-01-REDTAG',
     obj.first_seen || now,
-    obj.last_seen || now
+    obj.last_seen || now,
+    obj.item_name || null,
+    obj.serial_number || null,
+    obj.description || null,
+    obj.placement_reason || null,
+    obj.placement_duration_min !== undefined ? obj.placement_duration_min : 5,
+    obj.department || null,
+    obj.registered_at || null
   );
   return getObjectById(obj.id);
+}
+
+// Kiosk Session and Item Registration Store
+export function createKioskRegistration(data) {
+  const id = data.id || `REG-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+  const now = new Date().toISOString();
+  const durationMin = parseInt(data.duration_min || 5, 10);
+  const expiresAt = new Date(Date.now() + durationMin * 60 * 1000).toISOString();
+
+  db.prepare(`
+    INSERT INTO kiosk_registrations (
+      id, rfid_uid, employee_id, employee_name, department,
+      item_name, serial_number, description, reason, duration_min,
+      status, created_at, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    data.rfid_uid.trim().toUpperCase(),
+    data.employee_id || null,
+    data.employee_name || null,
+    data.department || 'General',
+    data.item_name.trim(),
+    data.serial_number ? data.serial_number.trim() : null,
+    data.description ? data.description.trim() : null,
+    data.reason ? data.reason.trim() : null,
+    durationMin,
+    'PENDING_PLACEMENT',
+    now,
+    expiresAt
+  );
+
+  return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(id);
+}
+
+export function getActiveKioskRegistration(rfidUID) {
+  if (!rfidUID) {
+    return db.prepare("SELECT * FROM kiosk_registrations WHERE status = 'PENDING_PLACEMENT' AND datetime(expires_at) > datetime('now') ORDER BY created_at DESC LIMIT 1").get();
+  }
+  return db.prepare(`
+    SELECT * FROM kiosk_registrations 
+    WHERE UPPER(rfid_uid) = ? AND status = 'PENDING_PLACEMENT' AND datetime(expires_at) > datetime('now')
+    ORDER BY created_at DESC LIMIT 1
+  `).get(rfidUID.trim().toUpperCase());
+}
+
+export function completeKioskRegistration(regId, eventId, objectId) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE kiosk_registrations 
+    SET status = 'PLACED', placed_at = ?, event_id = ?, object_id = ?
+    WHERE id = ?
+  `).run(now, eventId, objectId, regId);
+  return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(regId);
+}
+
+export function cancelKioskRegistration(regId) {
+  db.prepare("UPDATE kiosk_registrations SET status = 'CANCELLED' WHERE id = ?").run(regId);
+}
+
+export function getPlacements(limit = 100) {
+  return db.prepare(`
+    SELECT 
+      o.id as object_id,
+      o.event_id,
+      COALESCE(o.item_name, o.object_type) as item_name,
+      o.serial_number,
+      o.description,
+      o.placement_reason,
+      o.placement_duration_min,
+      COALESCE(o.department, (SELECT department FROM employees WHERE UPPER(employees.rfid_uid) = UPPER(o.rfid_uid) LIMIT 1), 'General') as department,
+      o.registered_at,
+      o.first_seen as placed_at,
+      o.last_seen,
+      o.state,
+      o.authorization_status,
+      o.employee_name,
+      o.employee_id,
+      o.rfid_uid,
+      o.evidence_image,
+      o.camera_id
+    FROM objects o
+    ORDER BY o.first_seen DESC
+    LIMIT ?
+  `).all(limit);
 }
 
 export function getObjectById(id) {

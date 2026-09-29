@@ -19,8 +19,19 @@ import {
   updateObjectState,
   getMailJobById,
   getMailJobByAlertId,
-  getMailJobByEventId
+  getMailJobByEventId,
+  createKioskRegistration,
+  getActiveKioskRegistration,
+  completeKioskRegistration,
+  cancelKioskRegistration,
+  getPlacements
 } from '../db.js';
+import {
+  requireAdmin,
+  generateAdminToken,
+  revokeAdminToken,
+  verifyCredentials
+} from '../middleware/auth.js';
 import { rfidService } from '../services/rfidService.js';
 import { visionService } from '../services/visionService.js';
 import { reportingService } from '../services/reportingService.js';
@@ -35,6 +46,179 @@ const evidenceDir = path.resolve(__dirname, '../../uploads/evidence');
 if (!fs.existsSync(evidenceDir)) fs.mkdirSync(evidenceDir, { recursive: true });
 
 const router = express.Router();
+
+// ==========================================
+// 1. ADMINISTRATOR AUTHENTICATION ENDPOINTS
+// ==========================================
+router.post('/admin/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required.' });
+  }
+
+  if (verifyCredentials(username, password)) {
+    const { token, expiresAt } = generateAdminToken(username);
+    console.log(`🔐 [Auth] Administrator logged in: ${username}`);
+    return res.json({
+      success: true,
+      token,
+      expiresAt,
+      user: { username, role: 'ADMIN' }
+    });
+  }
+
+  console.warn(`⚠️ [Auth] Failed admin login attempt for username: ${username}`);
+  return res.status(401).json({ error: 'Invalid administrator credentials.' });
+});
+
+router.get('/admin/verify', requireAdmin, (req, res) => {
+  res.json({
+    authenticated: true,
+    user: req.user
+  });
+});
+
+router.post('/admin/logout', (req, res) => {
+  let token = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  }
+  if (!token && req.query.token) {
+    token = req.query.token;
+  }
+  if (token) revokeAdminToken(token);
+  res.json({ success: true, message: 'Logged out successfully.' });
+});
+
+// Admin Placements View (Detailed placement records with item metadata & evidence)
+router.get('/admin/placements', requireAdmin, (req, res) => {
+  const limit = parseInt(req.query.limit || '100', 10);
+  const placements = getPlacements(limit);
+  res.json(placements);
+});
+
+// ==========================================
+// 2. EMPLOYEE KIOSK ENDPOINTS (Privacy-First)
+// ==========================================
+
+// Kiosk: Verify RFID Card (Returns ONLY current card's basic employee name/dept, zero sensitive history)
+router.post('/kiosk/verify-rfid', (req, res) => {
+  const { rfid_uid } = req.body;
+  if (!rfid_uid) {
+    return res.status(400).json({ valid: false, error: 'RFID UID is required.' });
+  }
+
+  const cleanUID = rfid_uid.trim().toUpperCase();
+  const emp = getEmployeeByUID(cleanUID);
+
+  if (!emp) {
+    return res.status(404).json({
+      valid: false,
+      authorized: false,
+      reason: 'RFID badge not found in registry. Please contact administrator.'
+    });
+  }
+
+  if (emp.is_authorized !== 1) {
+    return res.status(403).json({
+      valid: true,
+      authorized: false,
+      name: emp.name,
+      department: emp.department,
+      reason: 'RFID badge is marked UNAUTHORIZED.'
+    });
+  }
+
+  // Trigger hardware/virtual scan in rfidService to arm the authorization window
+  const scanResult = rfidService.handleScan(cleanUID, 'KIOSK_VERIFY');
+
+  return res.json({
+    valid: true,
+    authorized: true,
+    name: emp.name,
+    department: emp.department || 'General',
+    employee_id: emp.id,
+    uid: emp.rfid_uid,
+    valid_until: scanResult?.activeToken?.expires_at || (Date.now() + 60000)
+  });
+});
+
+// Kiosk: Register Item for Placement
+router.post('/kiosk/register-item', (req, res) => {
+  const { rfid_uid, item_name, serial_number, description, reason, duration_min } = req.body;
+
+  if (!rfid_uid || !item_name || !reason) {
+    return res.status(400).json({
+      error: 'rfid_uid, item_name, and reason are required for placement.'
+    });
+  }
+
+  const cleanUID = rfid_uid.trim().toUpperCase();
+  const emp = getEmployeeByUID(cleanUID);
+  if (!emp || emp.is_authorized !== 1) {
+    return res.status(403).json({ error: 'Valid authorized employee RFID required.' });
+  }
+
+  const durationMinutes = Math.max(1, Math.min(120, parseInt(duration_min || 5, 10)));
+  const registration = createKioskRegistration({
+    rfid_uid: cleanUID,
+    employee_id: emp.id,
+    employee_name: emp.name,
+    department: emp.department || 'General',
+    item_name: item_name.trim(),
+    serial_number: serial_number ? serial_number.trim() : null,
+    description: description ? description.trim() : null,
+    reason: reason.trim(),
+    duration_min: durationMinutes
+  });
+
+  // Extend or refresh the active RFID token to match the selected duration
+  const durationMs = durationMinutes * 60 * 1000;
+  if (rfidService.activeToken && rfidService.activeToken.uid === cleanUID) {
+    rfidService.activeToken.expires_at = Date.now() + durationMs;
+  } else {
+    // If not already active, trigger scan to activate
+    rfidService.handleScan(cleanUID, 'KIOSK_REGISTRATION');
+    if (rfidService.activeToken) {
+      rfidService.activeToken.expires_at = Date.now() + durationMs;
+    }
+  }
+
+  console.log(`📋 [Kiosk] Item registered: "${item_name}" by ${emp.name} (${cleanUID}), duration: ${durationMinutes}m`);
+
+  res.json({
+    success: true,
+    registration: {
+      id: registration.id,
+      item_name: registration.item_name,
+      serial_number: registration.serial_number,
+      employee_name: emp.name,
+      department: emp.department,
+      duration_min: durationMinutes,
+      expires_at: registration.expires_at
+    }
+  });
+});
+
+// Kiosk: Check current session status
+router.get('/kiosk/session', (req, res) => {
+  const { rfid_uid } = req.query;
+  const reg = getActiveKioskRegistration(rfid_uid);
+  res.json({ active: !!reg, registration: reg || null });
+});
+
+// Kiosk: Cancel pending registration
+router.post('/kiosk/cancel', (req, res) => {
+  const { registration_id, rfid_uid } = req.body;
+  if (registration_id) {
+    cancelKioskRegistration(registration_id);
+  } else if (rfid_uid) {
+    const reg = getActiveKioskRegistration(rfid_uid);
+    if (reg) cancelKioskRegistration(reg.id);
+  }
+  res.json({ success: true, message: 'Session cancelled.' });
+});
 
 // System health and live status (Section 21 & 30)
 router.get('/status', async (req, res) => {
@@ -222,13 +406,13 @@ router.put('/config/polygon', async (req, res) => {
   }
 });
 
-// Employee Management
-router.get('/employees', (req, res) => {
+// Employee Management (Admin Only)
+router.get('/employees', requireAdmin, (req, res) => {
   const list = getAllEmployees();
   res.json(list);
 });
 
-router.post('/employees', (req, res) => {
+router.post('/employees', requireAdmin, (req, res) => {
   const { id, rfid_uid, name, department, is_authorized } = req.body;
   if (!rfid_uid || !name) {
     return res.status(400).json({ error: 'rfid_uid and name are required.' });
@@ -244,33 +428,33 @@ router.post('/employees', (req, res) => {
   res.json(emp);
 });
 
-router.delete('/employees/:id', (req, res) => {
+router.delete('/employees/:id', requireAdmin, (req, res) => {
   deleteEmployee(req.params.id);
   res.json({ success: true });
 });
 
-// Events Audit Log
-router.get('/events', (req, res) => {
+// Events Audit Log (Admin Only)
+router.get('/events', requireAdmin, (req, res) => {
   const limit = parseInt(req.query.limit || '100', 10);
   const events = getEvents(limit);
   res.json(events);
 });
 
-// Alerts Management
-router.get('/alerts', (req, res) => {
+// Alerts Management (Admin Only)
+router.get('/alerts', requireAdmin, (req, res) => {
   const filter = req.query.filter || 'ALL';
   const limit = parseInt(req.query.limit || '100', 10);
   const alerts = getAlerts(filter, limit);
   res.json(alerts);
 });
 
-router.get('/alerts/:id', (req, res) => {
+router.get('/alerts/:id', requireAdmin, (req, res) => {
   const alert = getAlertById(req.params.id);
   if (!alert) return res.status(404).json({ error: 'Alert not found' });
   res.json(alert);
 });
 
-router.post('/alerts/:id/acknowledge', (req, res) => {
+router.post('/alerts/:id/acknowledge', requireAdmin, (req, res) => {
   const success = updateAlertStatus(req.params.id, 'ACKNOWLEDGED');
   if (success && visionService.io) {
     visionService.io.emit('alert_status_changed', { id: req.params.id, status: 'ACKNOWLEDGED' });
@@ -278,7 +462,7 @@ router.post('/alerts/:id/acknowledge', (req, res) => {
   res.json({ success, id: req.params.id, status: 'ACKNOWLEDGED' });
 });
 
-router.post('/alerts/:id/resolve', (req, res) => {
+router.post('/alerts/:id/resolve', requireAdmin, (req, res) => {
   const success = updateAlertStatus(req.params.id, 'RESOLVED');
   if (success && visionService.io) {
     visionService.io.emit('alert_status_changed', { id: req.params.id, status: 'RESOLVED' });
@@ -286,13 +470,13 @@ router.post('/alerts/:id/resolve', (req, res) => {
   res.json({ success, id: req.params.id, status: 'RESOLVED' });
 });
 
-// Settings
-router.get('/settings', (req, res) => {
+// Settings (Admin Only)
+router.get('/settings', requireAdmin, (req, res) => {
   const settings = getAllSettings();
   res.json(settings);
 });
 
-router.put('/settings', (req, res) => {
+router.put('/settings', requireAdmin, (req, res) => {
   const updates = req.body;
   for (const [key, value] of Object.entries(updates)) {
     updateSetting(key, value);
@@ -437,8 +621,8 @@ router.post('/vision/placement-confirmed', async (req, res) => {
   }
 });
 
-// Section 82 & 90: Get currently PRESENT objects in Red Tag Area
-router.get('/objects/active', (req, res) => {
+// Section 82 & 90: Get currently PRESENT objects in Red Tag Area (Admin Only)
+router.get('/objects/active', requireAdmin, (req, res) => {
   try {
     const active = getActiveObjects();
     res.json({ success: true, count: active.length, objects: active });
@@ -730,9 +914,9 @@ router.post('/simulate/workflow/object-removal-replacement', async (req, res) =>
   }
 });
 
-// ─── REPORTING ENDPOINTS ──────────────────────────────────────────────────
+// ─── REPORTING ENDPOINTS (Admin Only) ──────────────────────────────────────────────────
 
-router.post('/reports/generate', async (req, res) => {
+router.post('/reports/generate', requireAdmin, async (req, res) => {
   try {
     const events = getEvents(50);
     const excelRes = await reportingService.generateIncidentExcel(events);
@@ -756,7 +940,7 @@ router.post('/reports/generate', async (req, res) => {
   }
 });
 
-router.get('/reports/download/:filename', (req, res) => {
+router.get('/reports/download/:filename', requireAdmin, (req, res) => {
   const filePath = path.join(reportsDir, req.params.filename);
   if (fs.existsSync(filePath)) {
     res.download(filePath);
@@ -765,7 +949,7 @@ router.get('/reports/download/:filename', (req, res) => {
   }
 });
 
-router.post('/reports/send-teams', async (req, res) => {
+router.post('/reports/send-teams', requireAdmin, async (req, res) => {
   try {
     const event = req.body.event || { object_type: 'Machine Part', event_type: 'UNAUTHORIZED_PLACEMENT' };
     const result = await reportingService.sendTeamsWebhook(event);
@@ -775,7 +959,7 @@ router.post('/reports/send-teams', async (req, res) => {
   }
 });
 
-router.post('/reports/send-email', async (req, res) => {
+router.post('/reports/send-email', requireAdmin, async (req, res) => {
   try {
     const { email, event } = req.body;
     const events = getEvents(10);
@@ -790,8 +974,8 @@ router.post('/reports/send-email', async (req, res) => {
 
 // ─── MAIL PROCESSING PIPELINE ENDPOINTS (Section: Mail Processing Plan) ──────────
 
-// Get mail delivery status for an alert
-router.get('/alerts/:id/mail-status', (req, res) => {
+// Get mail delivery status for an alert (Admin Only)
+router.get('/alerts/:id/mail-status', requireAdmin, (req, res) => {
   try {
     const alert = getAlertById(req.params.id);
     if (!alert) return res.status(404).json({ error: 'Alert not found' });
@@ -821,8 +1005,8 @@ router.get('/alerts/:id/mail-status', (req, res) => {
   }
 });
 
-// Manual email retry triggered by administrator from dashboard
-router.post('/alerts/:id/retry-email', async (req, res) => {
+// Manual email retry triggered by administrator from dashboard (Admin Only)
+router.post('/alerts/:id/retry-email', requireAdmin, async (req, res) => {
   try {
     const alert = getAlertById(req.params.id);
     if (!alert) return res.status(404).json({ error: 'Alert not found' });
@@ -866,8 +1050,8 @@ router.post('/alerts/:id/retry-email', async (req, res) => {
   }
 });
 
-// Direct test-email trigger for unauthorized incident notifications
-router.post('/alerts/test-email', async (req, res) => {
+// Direct test-email trigger for unauthorized incident notifications (Admin Only)
+router.post('/alerts/test-email', requireAdmin, async (req, res) => {
   try {
     const { email = 'yochitcheedella@gmail.com' } = req.body;
     const events = getEvents(20);

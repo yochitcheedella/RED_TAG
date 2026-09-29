@@ -1,7 +1,7 @@
 import { rfidService } from './rfidService.js';
 import { reportingService } from './reportingService.js';
 import { mailQueueService } from './mailQueueService.js';
-import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects } from '../db.js';
+import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -287,6 +287,16 @@ class CorrelationEngine {
     const eventType = isAuthorized ? 'AUTHORIZED_PLACEMENT' : 'UNAUTHORIZED_PLACEMENT';
     const alertStatus = isAuthorized ? 'NO_ALERT' : 'ALERT_TRIGGERED';
 
+    // Check if there is an active kiosk item registration for this RFID
+    const kioskReg = isAuthorized ? getActiveKioskRegistration(rfidUID) : null;
+    const finalItemName = kioskReg?.item_name || placementData.objectType || 'Object';
+    const finalSerialNo = kioskReg?.serial_number || null;
+    const finalDescription = kioskReg?.description || null;
+    const finalReason = kioskReg?.reason || null;
+    const finalDurationMin = kioskReg?.duration_min !== undefined ? kioskReg.duration_min : 5;
+    const finalDept = kioskReg?.department || activeToken?.department || 'General';
+    const registeredAt = kioskReg?.created_at || null;
+
     // Section 82: Register Authorized / Tracked Object Record in SQLite and in-memory registry
     const objectRecord = {
       id: objectId,
@@ -294,6 +304,13 @@ class CorrelationEngine {
       event_id: eventId,
       object_type: placementData.objectType,
       objectType: placementData.objectType,
+      item_name: finalItemName,
+      serial_number: finalSerialNo,
+      description: finalDescription,
+      placement_reason: finalReason,
+      placement_duration_min: finalDurationMin,
+      department: finalDept,
+      registered_at: registeredAt,
       rfid_uid: rfidUID,
       employee_id: employeeId,
       employee_name: employeeName,
@@ -313,6 +330,10 @@ class CorrelationEngine {
     registerObject(objectRecord);
     this.registeredObjects.set(objectId, objectRecord);
 
+    if (kioskReg) {
+      completeKioskRegistration(kioskReg.id, eventId, objectId);
+    }
+
     // Section 95 & Section 31: Persist final Event Model
     const savedEvent = logEvent({
       id: eventId,
@@ -330,11 +351,18 @@ class CorrelationEngine {
       time_difference: timeDifference !== null ? parseFloat(timeDifference) : null,
       evidence_image: finalEvidenceFilename,
       camera_id: 'CAM-01-REDTAG',
-      notes
+      notes,
+      item_name: finalItemName,
+      serial_number: finalSerialNo,
+      description: finalDescription,
+      placement_reason: finalReason,
+      placement_duration_min: finalDurationMin,
+      department: finalDept,
+      registered_at: registeredAt
     });
 
     // Section 37 Tagged Logging Format
-    console.log(`[DETECTION] New object detected: ${placementData.objectType}`);
+    console.log(`[DETECTION] New object detected: ${placementData.objectType} (Item: ${finalItemName})`);
     console.log(`[TRACKING] ${objectId} placement confirmed`);
     console.log(`[EVIDENCE] Best frame selected for ${objectId}`);
     console.log(`[EVIDENCE] Object crop saved: ${finalEvidenceFilename || 'N/A'}`);
@@ -352,9 +380,21 @@ class CorrelationEngine {
     }
     console.log('========================================\n');
 
-    // Broadcast to React Dashboard via Socket.IO
+    // Broadcast to React Dashboard & Kiosk via Socket.IO
     if (this.io) {
       if (isAuthorized) {
+        // Emit Kiosk placement success (ONLY for the current item/employee, zero admin data)
+        this.io.emit('kiosk_placement_success', {
+          success: true,
+          eventId,
+          objectId,
+          itemName: finalItemName,
+          serialNumber: finalSerialNo,
+          employeeName: employeeName,
+          department: finalDept,
+          message: 'Your item has been registered successfully. You may leave the area.'
+        });
+
         this.io.emit('placement_authorized', {
           eventId,
           objectId,
@@ -362,6 +402,9 @@ class CorrelationEngine {
           employee: employeeName,
           rfid: rfidUID,
           object: placementData.objectType,
+          item_name: finalItemName,
+          serial_number: finalSerialNo,
+          department: finalDept,
           object_state: 'PRESENT',
           evidenceImage: finalEvidenceFilename,
           timeDifference,

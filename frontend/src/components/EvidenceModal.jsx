@@ -19,7 +19,8 @@ export default function EvidenceModal({ event, onClose }) {
     setRetryCount(0);
   }, [event?.id, baseFilename]);
 
-  const imageUrl = baseFilename ? `/evidence/${baseFilename}${retryCount > 0 ? `?t=${retryCount}` : ''}` : null;
+  const token = sessionStorage.getItem('redtag_admin_token') || '';
+  const imageUrl = baseFilename ? `/evidence/${baseFilename}?token=${token}${retryCount > 0 ? `&t=${retryCount}` : ''}` : null;
 
   const handleImageError = () => {
     if (retryCount < 2) {
