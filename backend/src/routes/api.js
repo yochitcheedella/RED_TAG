@@ -24,6 +24,9 @@ import {
   getActiveKioskRegistration,
   completeKioskRegistration,
   cancelKioskRegistration,
+  getAnyPendingKioskRegistration,
+  expireOldKioskRegistrations,
+  expireKioskRegistration,
   getPlacements
 } from '../db.js';
 import {
@@ -130,6 +133,17 @@ router.post('/kiosk/verify-rfid', (req, res) => {
     });
   }
 
+  // Single Active Placement Session Rule: Check if another employee has a placement in progress
+  const pendingReg = getAnyPendingKioskRegistration();
+  if (pendingReg && pendingReg.rfid_uid !== cleanUID) {
+    return res.status(409).json({
+      valid: false,
+      authorized: false,
+      name: emp.name,
+      reason: `Another placement session is currently active for "${pendingReg.item_name}" (${pendingReg.employee_name}). Please wait for it to complete or expire.`
+    });
+  }
+
   // Trigger hardware/virtual scan in rfidService to arm the authorization window
   const scanResult = rfidService.handleScan(cleanUID, 'KIOSK_VERIFY');
 
@@ -158,6 +172,14 @@ router.post('/kiosk/register-item', (req, res) => {
   const emp = getEmployeeByUID(cleanUID);
   if (!emp || emp.is_authorized !== 1) {
     return res.status(403).json({ error: 'Valid authorized employee RFID required.' });
+  }
+
+  // Single Active Placement Session Rule: Ensure no other placement is currently active
+  const pendingReg = getAnyPendingKioskRegistration();
+  if (pendingReg && pendingReg.rfid_uid !== cleanUID) {
+    return res.status(409).json({
+      error: `Another placement session is already in progress for "${pendingReg.item_name}".`
+    });
   }
 
   // Allow customizable placement duration from 1 minute up to 30 days (43,200 min)
@@ -219,6 +241,19 @@ router.post('/kiosk/cancel', (req, res) => {
     if (reg) cancelKioskRegistration(reg.id);
   }
   res.json({ success: true, message: 'Session cancelled.' });
+});
+
+// Kiosk: Expire active session when timer reaches 00:00 without object detection
+router.post('/kiosk/session/expire', (req, res) => {
+  const { registration_id } = req.body;
+  if (registration_id) {
+    expireKioskRegistration(registration_id);
+    console.log(`⏱️ [Kiosk] Placement session expired without detection: ${registration_id}`);
+  } else {
+    expireOldKioskRegistrations();
+  }
+  rfidService.consumeToken();
+  res.json({ success: true, status: 'EXPIRED' });
 });
 
 // System health and live status (Section 21 & 30)

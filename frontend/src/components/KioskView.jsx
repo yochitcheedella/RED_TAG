@@ -213,7 +213,12 @@ export default function KioskView({ socket, onOpenAdmin }) {
           setTimeRemainingSec((prev) => {
             if (prev <= 1) {
               clearInterval(countdownTimerRef.current);
-              resetKiosk('Placement time expired.');
+              fetch('/api/kiosk/session/expire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ registration_id: data.registration.id })
+              }).catch(() => {});
+              resetKiosk('Placement time expired. No item was detected.');
               return 0;
             }
             return prev - 1;
@@ -862,7 +867,16 @@ export default function KioskView({ socket, onOpenAdmin }) {
 
             <button
               type="button"
-              onClick={() => resetKiosk('Placement cancelled by operator.')}
+              onClick={() => {
+                if (activeItem?.id) {
+                  fetch('/api/kiosk/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ registration_id: activeItem.id })
+                  }).catch(() => {});
+                }
+                resetKiosk('Placement cancelled by operator.');
+              }}
               style={{
                 marginTop: '10px',
                 background: 'transparent',
@@ -949,7 +963,7 @@ export default function KioskView({ socket, onOpenAdmin }) {
                 boxShadow: '0 4px 15px rgba(16, 185, 129, 0.4)'
               }}
             >
-              NEXT EMPLOYEE ({autoResetSec}s)
+              SCAN NEXT RFID ({autoResetSec}s)
             </button>
           </div>
         )}

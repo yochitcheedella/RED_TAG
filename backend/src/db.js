@@ -641,7 +641,26 @@ export function createKioskRegistration(data) {
   return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(id);
 }
 
+export function expireOldKioskRegistrations() {
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE kiosk_registrations 
+    SET status = 'EXPIRED' 
+    WHERE status = 'PENDING_PLACEMENT' AND datetime(expires_at) <= datetime(?)
+  `).run(now);
+}
+
+export function getAnyPendingKioskRegistration() {
+  expireOldKioskRegistrations();
+  return db.prepare(`
+    SELECT * FROM kiosk_registrations 
+    WHERE status = 'PENDING_PLACEMENT' AND datetime(expires_at) > datetime('now')
+    ORDER BY created_at DESC LIMIT 1
+  `).get();
+}
+
 export function getActiveKioskRegistration(rfidUID) {
+  expireOldKioskRegistrations();
   if (!rfidUID) {
     return db.prepare("SELECT * FROM kiosk_registrations WHERE status = 'PENDING_PLACEMENT' AND datetime(expires_at) > datetime('now') ORDER BY created_at DESC LIMIT 1").get();
   }
@@ -660,6 +679,10 @@ export function completeKioskRegistration(regId, eventId, objectId) {
     WHERE id = ?
   `).run(now, eventId, objectId, regId);
   return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(regId);
+}
+
+export function expireKioskRegistration(regId) {
+  db.prepare("UPDATE kiosk_registrations SET status = 'EXPIRED' WHERE id = ?").run(regId);
 }
 
 export function cancelKioskRegistration(regId) {
