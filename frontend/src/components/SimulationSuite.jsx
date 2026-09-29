@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Radio, Box, AlertTriangle, ShieldCheck, ShieldAlert, Clock,
   Sparkles, Footprints, Play, CheckCircle2, XCircle, RefreshCw,
@@ -7,12 +7,22 @@ import {
 import { sounds } from '../utils/audio';
 
 export default function SimulationSuite({ onSimulateRFID, onSimulatePlacement, activeToken }) {
+  const [employees, setEmployees] = useState([]);
   const [customUID, setCustomUID] = useState('');
   const [customObjectType, setCustomObjectType] = useState('Box');
   const [isRunningScenario, setIsRunningScenario] = useState(false);
   const [runningId, setRunningId] = useState(null);
   const [scenarioStatus, setScenarioStatus] = useState('');
   const [lastResult, setLastResult] = useState(null); // 'success' | 'error'
+
+  useEffect(() => {
+    fetch('/api/employees')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) setEmployees(data);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleScan = (uid) => {
     sounds.playScanBeep?.();
@@ -42,7 +52,7 @@ export default function SimulationSuite({ onSimulateRFID, onSimulatePlacement, a
     try {
       switch (scenarioId) {
         case 'authorized': {
-          step('Step 1: Employee 001 (A472198C) scans authorized RFID card...');
+          step('Step 1: Authorized employee scans RFID card...');
           await new Promise(r => setTimeout(r, 600));
           step('Step 2: Employee places Box into Red Tag Area...');
           await runWorkflowEndpoint('/api/simulate/workflow/authorized-placement', 'Authorized Placement');
@@ -62,9 +72,9 @@ export default function SimulationSuite({ onSimulateRFID, onSimulatePlacement, a
         }
 
         case 'unauthorized_rfid': {
-          step('Step 1: Contractor scans unauthorized RFID card XYZ12345...');
+          step('Step 1: Unregistered or unauthorized RFID card scanned...');
           await new Promise(r => setTimeout(r, 600));
-          step('Step 2: Object placed — RFID is marked UNAUTHORIZED in DB...');
+          step('Step 2: Object placed — RFID is not authorized in DB...');
           await runWorkflowEndpoint('/api/simulate/workflow/unauthorized-card', 'Unauthorized Card');
           await new Promise(r => setTimeout(r, 600));
           step('🚨 Golden Test 3 Complete — UNAUTHORIZED_RFID, Alert Triggered + Evidence Saved');
@@ -368,29 +378,45 @@ export default function SimulationSuite({ onSimulateRFID, onSimulatePlacement, a
           </div>
 
           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            {[
-              { uid: 'A472198C', label: 'EMP-001 (Auth)', auth: true },
-              { uid: 'B7214492', label: 'EMP-002 (Auth)', auth: true },
-              { uid: 'XYZ12345', label: 'EMP-003 (Unauth)', auth: false }
-            ].map(({ uid, label, auth }) => (
-              <button
-                key={uid}
-                onClick={() => handleScan(uid)}
-                title={`Scan UID: ${uid}`}
-                style={{
-                  flex: 1,
-                  padding: '6px 10px',
-                  fontSize: '0.75rem',
-                  borderRadius: '6px',
-                  background: auth ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: auth ? '#34d399' : '#f87171',
-                  border: `1px solid ${auth ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                  fontWeight: 500,
-                  cursor: 'pointer'
-                }}>
-                {label}
-              </button>
-            ))}
+            {employees.length > 0 ? (
+              employees.map(emp => (
+                <button
+                  key={emp.rfid_uid}
+                  onClick={() => handleScan(emp.rfid_uid)}
+                  title={`Scan UID: ${emp.rfid_uid}`}
+                  style={{
+                    flex: '1 1 auto',
+                    minWidth: '100px',
+                    padding: '6px 10px',
+                    fontSize: '0.75rem',
+                    borderRadius: '6px',
+                    background: emp.is_authorized ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: emp.is_authorized ? '#34d399' : '#f87171',
+                    border: `1px solid ${emp.is_authorized ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                    fontWeight: 500,
+                    cursor: 'pointer'
+                  }}>
+                  {emp.name} ({emp.is_authorized ? 'Auth' : 'Unauth'})
+                </button>
+              ))
+            ) : null}
+            <button
+              onClick={() => handleScan('9999999999')}
+              title="Scan Unregistered Card"
+              style={{
+                flex: '1 1 auto',
+                minWidth: '100px',
+                padding: '6px 10px',
+                fontSize: '0.75rem',
+                borderRadius: '6px',
+                background: 'rgba(239, 68, 68, 0.15)',
+                color: '#f87171',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                fontWeight: 500,
+                cursor: 'pointer'
+              }}>
+              Unregistered Card
+            </button>
           </div>
 
           {/* Custom UID Input */}

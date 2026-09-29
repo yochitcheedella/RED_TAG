@@ -218,17 +218,7 @@ try {
   console.warn('Settings migration note:', e.message);
 }
 
-// Seed default employees if none exist
-const countEmployees = db.prepare('SELECT COUNT(*) as count FROM employees').get().count;
-if (countEmployees === 0) {
-  const insertEmp = db.prepare(
-    'INSERT INTO employees (id, rfid_uid, name, department, is_authorized) VALUES (?, ?, ?, ?, ?)'
-  );
-  insertEmp.run('EMP-001', 'A472198C', 'Employee 001', 'Logistics', 1);
-  insertEmp.run('EMP-002', 'B7214492', 'Employee 002', 'Quality Control', 1);
-  insertEmp.run('EMP-003', 'XYZ12345', 'Employee 003', 'Contractor', 0);
-  console.log('✅ Seeded default employees (A472198C, B7214492, XYZ12345)');
-}
+// Employee registry is populated via Admin Portal or direct user registration
 
 export function getEmployeeByUID(rfidUID) {
   if (!rfidUID) return null;

@@ -16,7 +16,7 @@ export default function JavaDiagnosticsPanel({ systemStatus }) {
   const [inventory, setInventory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [testUID, setTestUID] = useState('A472198C');
+  const [testUID, setTestUID] = useState('3369735914');
   const [tcpStatus, setTcpStatus] = useState(null);
 
   const fetchInventory = async () => {
@@ -225,7 +225,7 @@ export default function JavaDiagnosticsPanel({ systemStatus }) {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: '4px' }}>
-            {['A472198C', 'B7214492', 'XYZ12345'].map(uid => (
+            {['3369735914', '0515815906', '1141427810'].map(uid => (
               <button
                 key={uid}
                 type="button"

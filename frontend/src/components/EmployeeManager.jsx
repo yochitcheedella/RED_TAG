@@ -252,7 +252,7 @@ export default function EmployeeManager({
               </label>
               <input
                 type="text"
-                placeholder="e.g. A472198C or B7214492"
+                placeholder="e.g. 3369735914 or 0515815906"
                 required
                 value={formData.rfid_uid}
                 onChange={(e) => setFormData({ ...formData, rfid_uid: e.target.value.toUpperCase() })}
