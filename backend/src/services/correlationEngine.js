@@ -1,7 +1,7 @@
 import { rfidService } from './rfidService.js';
 import { reportingService } from './reportingService.js';
 import { mailQueueService } from './mailQueueService.js';
-import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration, getAnyPendingKioskRegistration } from '../db.js';
+import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration, getAnyPendingKioskRegistration, getKioskRegistrationById } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -22,6 +22,7 @@ class CorrelationEngine {
     // Section 80 & 82: In-memory registry of active tracked objects in the Red Tag Area
     // key -> { objectId, label, box, state: 'PRESENT' | 'REMOVED', isAuthorized, authStatus, employeeId, employeeName, rfidUID, evidenceImage, firstSeen, lastSeen }
     this.registeredObjects = new Map();
+    this.pendingKioskCandidate = null;
   }
 
   init(io) {
@@ -195,16 +196,43 @@ class CorrelationEngine {
     const activeToken = rfidService.getActiveToken();
 
     if (kioskReg && new Date(kioskReg.expires_at).getTime() > now) {
-      // CASE 0: KIOSK-REGISTERED AUTHORIZED PLACEMENT
-      isAuthorized = true;
-      authStatus = 'AUTHORIZED';
-      rfidUID = kioskReg.rfid_uid;
-      employeeId = kioskReg.employee_id;
-      employeeName = kioskReg.employee_name;
-      timeDifference = ((now - new Date(kioskReg.created_at).getTime()) / 1000).toFixed(1);
-      notes = `Authorized Kiosk placement: ${kioskReg.item_name} by ${employeeName} (${rfidUID})`;
-      console.log(`📋 [CorrelationEngine] Matched active Kiosk session: "${kioskReg.item_name}" for ${employeeName} (${rfidUID})`);
-      rfidService.consumeToken();
+      // CASE 0: KIOSK-REGISTERED PENDING PLACEMENT
+      // Store candidate detection for the active kiosk session. Awaits employee pressing "OBJECT PLACED".
+      this.pendingKioskCandidate = {
+        kioskRegId: kioskReg.id,
+        objectType: placementData.objectType,
+        box: placementData.box,
+        confidence: placementData.confidence || 0.94,
+        evidenceImage: placementData.evidenceImage,
+        objectId: objectId,
+        detectedAt: now
+      };
+
+      console.log(`📋 [CorrelationEngine] Candidate item detected in Red Tag Area for Kiosk session "${kioskReg.item_name}" (${placementData.objectType}). Waiting for employee to click "OBJECT PLACED".`);
+
+      if (this.io) {
+        this.io.emit('kiosk_item_detected', {
+          kioskRegId: kioskReg.id,
+          objectType: placementData.objectType,
+          itemName: kioskReg.item_name,
+          evidenceImage: placementData.evidenceImage,
+          message: `Object detected in Red Tag Area: ${placementData.objectType}`
+        });
+      }
+
+      return {
+        event: {
+          id: `PENDING-${objectId}`,
+          object_id: objectId,
+          authorization_status: 'AUTHORIZED',
+          alert_status: 'NO_ALERT',
+          alreadyAuthorized: true,
+          evidence_image: placementData.evidenceImage
+        },
+        object_id: objectId,
+        object_state: 'PLACEMENT_CONFIRMING',
+        pendingKiosk: true
+      };
     } else if (activeToken) {
       rfidUID = activeToken.uid;
       employeeId = activeToken.employee_id || null;
@@ -456,6 +484,168 @@ class CorrelationEngine {
       ...savedEvent,
       object_id: objectId,
       object_state: 'PRESENT'
+    };
+  }
+
+  /**
+   * Finalize and confirm a registered Kiosk placement when employee clicks "OBJECT PLACED".
+   * Captures optical evidence, records AUTHORIZED_PLACEMENT event, completes kiosk registration,
+   * stops the countdown timer, and emits success socket events.
+   */
+  async confirmKioskPlacement({ registrationId, imageBase64, objectType }) {
+    const reg = registrationId ? getKioskRegistrationById(registrationId) : getAnyPendingKioskRegistration();
+    if (!reg) {
+      throw new Error('No active pending placement session found.');
+    }
+    if (reg.status !== 'PENDING_PLACEMENT') {
+      throw new Error(`Registration is already ${reg.status}.`);
+    }
+
+    const now = Date.now();
+    const eventId = `EVT-${now}-${uuidv4().slice(0, 4).toUpperCase()}`;
+    const objectId = `TRACK-${String(Math.floor(Math.random() * 900) + 100)}`;
+
+    // 1. Evidence image resolution
+    let finalEvidenceFilename = null;
+    if (imageBase64) {
+      try {
+        const filename = `evidence_${now}_${uuidv4().slice(0, 8)}.jpg`;
+        const filePath = path.join(evidenceDir, filename);
+        const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+        fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+        finalEvidenceFilename = filename;
+        console.log(`📸 [Kiosk] Saved direct evidence frame from camera crop: ${filename}`);
+      } catch (err) {
+        console.warn('Could not save uploaded evidence image:', err.message);
+      }
+    }
+
+    // If client didn't supply an imageBase64, use the candidate captured by CCTV during placement
+    if (!finalEvidenceFilename && this.pendingKioskCandidate && this.pendingKioskCandidate.kioskRegId === reg.id) {
+      finalEvidenceFilename = this.pendingKioskCandidate.evidenceImage;
+      console.log(`📸 [Kiosk] Linked CCTV candidate evidence image: ${finalEvidenceFilename}`);
+    }
+
+    // If still no evidence image, generate high-definition optical badge
+    if (!finalEvidenceFilename) {
+      try {
+        const { visionService } = await import('./visionService.js');
+        finalEvidenceFilename = await visionService.generateObjectOnlyBadge(reg.item_name || 'Object', { x: 200, y: 200, width: 240, height: 180 });
+      } catch (e) {
+        console.warn('Fallback evidence generation error:', e.message);
+      }
+    }
+
+    const finalItemName = reg.item_name || 'Object';
+    const finalSerialNo = reg.serial_number || null;
+    const finalDescription = reg.description || null;
+    const finalReason = reg.reason || null;
+    const finalDurationMin = reg.duration_min !== undefined ? reg.duration_min : 5;
+    const finalDept = reg.department || 'General';
+    const registeredAt = reg.created_at || new Date(now).toISOString();
+    const timeDifference = ((now - new Date(registeredAt).getTime()) / 1000).toFixed(1);
+
+    const objectRecord = {
+      id: objectId,
+      event_id: eventId,
+      object_type: objectType || reg.item_name || 'Object',
+      item_name: finalItemName,
+      serial_number: finalSerialNo,
+      description: finalDescription,
+      placement_reason: finalReason,
+      placement_duration_min: finalDurationMin,
+      rfid_uid: reg.rfid_uid,
+      employee_id: reg.employee_id,
+      employee_name: reg.employee_name,
+      department: finalDept,
+      authorization_status: 'AUTHORIZED',
+      state: 'PRESENT',
+      confidence: 0.95,
+      first_seen: new Date(now).toISOString(),
+      last_seen: new Date(now).toISOString(),
+      evidence_image: finalEvidenceFilename,
+      notes: `Authorized Kiosk placement: ${finalItemName} confirmed by ${reg.employee_name} (${reg.rfid_uid})`
+    };
+
+    registerObject(objectRecord);
+    this.registeredObjects.set(objectId, objectRecord);
+
+    // Complete the kiosk registration in DB
+    completeKioskRegistration(reg.id, eventId, objectId);
+
+    // Log the authorized event in DB
+    const savedEvent = logEvent({
+      id: eventId,
+      timestamp: new Date(now).toISOString(),
+      event_type: 'AUTHORIZED_PLACEMENT',
+      rfid_uid: reg.rfid_uid,
+      employee_id: reg.employee_id,
+      employee_name: reg.employee_name,
+      object_type: reg.item_name || 'Object',
+      object_id: objectId,
+      object_state: 'PRESENT',
+      authorization_status: 'AUTHORIZED',
+      alert_status: 'NO_ALERT',
+      confidence: 0.95,
+      time_difference: parseFloat(timeDifference),
+      evidence_image: finalEvidenceFilename,
+      camera_id: 'CAM-01-REDTAG',
+      notes: objectRecord.notes,
+      item_name: finalItemName,
+      serial_number: finalSerialNo,
+      description: finalDescription,
+      placement_reason: finalReason,
+      placement_duration_min: finalDurationMin,
+      department: finalDept,
+      registered_at: registeredAt
+    });
+
+    // Clear active RFID token and pending candidate
+    rfidService.consumeToken();
+    this.pendingKioskCandidate = null;
+
+    console.log(`✅ [Kiosk] Placement confirmed by operator: "${finalItemName}" for ${reg.employee_name} (${reg.rfid_uid})`);
+
+    // Emit Socket.IO events to Kiosk & Admin Dashboard
+    if (this.io) {
+      this.io.emit('kiosk_placement_success', {
+        success: true,
+        eventId,
+        objectId,
+        itemName: finalItemName,
+        serialNumber: finalSerialNo,
+        employeeName: reg.employee_name,
+        department: finalDept,
+        evidenceImage: finalEvidenceFilename,
+        message: 'Your item has been registered successfully. You may leave the area.'
+      });
+
+      this.io.emit('placement_authorized', {
+        eventId,
+        objectId,
+        event: savedEvent,
+        employee: reg.employee_name,
+        rfid: reg.rfid_uid,
+        object: finalItemName,
+        item_name: finalItemName,
+        serial_number: finalSerialNo,
+        department: finalDept,
+        object_state: 'PRESENT',
+        evidenceImage: finalEvidenceFilename,
+        timeDifference,
+        notes: objectRecord.notes
+      });
+
+      this.io.emit('object_registered', objectRecord);
+      this.io.emit('new_event_logged', savedEvent);
+    }
+
+    return {
+      success: true,
+      event: savedEvent,
+      eventId: savedEvent.id,
+      objectId,
+      evidenceImage: finalEvidenceFilename
     };
   }
 }

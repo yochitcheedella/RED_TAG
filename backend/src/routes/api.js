@@ -243,15 +243,32 @@ router.post('/kiosk/cancel', (req, res) => {
   res.json({ success: true, message: 'Session cancelled.' });
 });
 
-// Kiosk: Expire active session when timer reaches 00:00 without object detection
+// Kiosk: Confirm Placement by operator clicking "OBJECT PLACED"
+router.post('/kiosk/confirm-placement', async (req, res) => {
+  try {
+    const { registration_id, imageBase64, objectType } = req.body;
+    const result = await correlationEngine.confirmKioskPlacement({
+      registrationId: registration_id,
+      imageBase64,
+      objectType
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Kiosk confirm-placement error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Kiosk: Expire active session when timer reaches 00:00 without object detection/confirmation
 router.post('/kiosk/session/expire', (req, res) => {
   const { registration_id } = req.body;
   if (registration_id) {
     expireKioskRegistration(registration_id);
-    console.log(`⏱️ [Kiosk] Placement session expired without detection: ${registration_id}`);
+    console.log(`⏱️ [Kiosk] Placement session expired without confirmation: ${registration_id}`);
   } else {
     expireOldKioskRegistrations();
   }
+  correlationEngine.pendingKioskCandidate = null;
   rfidService.consumeToken();
   res.json({ success: true, status: 'EXPIRED' });
 });

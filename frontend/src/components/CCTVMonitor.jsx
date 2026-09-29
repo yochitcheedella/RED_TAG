@@ -12,7 +12,8 @@ export default function CCTVMonitor({
   polygonVertices: externalPolygon,
   onPolygonChange,
   onCameraStateChange,
-  onActivityChange
+  onActivityChange,
+  cctvRef
 }) {
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -84,9 +85,59 @@ export default function CCTVMonitor({
   }, [polygonVertices]);
   useEffect(() => { manualObjectsRef.current = manualObjects; }, [manualObjects]);
   useEffect(() => { calibrationModeRef.current = calibrationMode; }, [calibrationMode]);
-  useEffect(() => { drawPointsRef.current = drawPoints; }, [drawPoints]);
+  const onActivityChangeRef = useRef(onActivityChange);
+  const fpsRef = useRef(0);
+  useEffect(() => { onActivityChangeRef.current = onActivityChange; }, [onActivityChange]);
   useEffect(() => { unauthorizedAlertRef.current = unauthorizedAlert; }, [unauthorizedAlert]);
   useEffect(() => { onUnauthorizedAlertRef.current = onUnauthorizedAlert; }, [onUnauthorizedAlert]);
+
+  // Expose live high-resolution frame/object capture to parent (Kiosk & Admin)
+  useEffect(() => {
+    if (cctvRef) {
+      cctvRef.current = {
+        captureCurrentFrame: () => {
+          try {
+            const video = videoRef.current;
+            if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
+            // 1. If an active tracker is inside ROI, crop it with generous padding
+            const activeTracker = (trackersRef.current || []).find(t => t.inside) || (trackersRef.current || [])[0];
+            if (activeTracker) {
+              const crop = cropTargetObjectOnly(video, activeTracker, 50);
+              if (crop?.dataUrl) return crop.dataUrl;
+            }
+            // 2. Fallback: crop the physical Red Tag polygon region from the live video
+            const poly = polygonVerticesRef.current || [
+              { x: 130, y: 180 }, { x: 510, y: 180 }, { x: 560, y: 440 }, { x: 80, y: 440 }
+            ];
+            const minX = Math.max(0, Math.min(...poly.map(p => p.x)) - 20);
+            const minY = Math.max(0, Math.min(...poly.map(p => p.y)) - 20);
+            const maxX = Math.min(640, Math.max(...poly.map(p => p.x)) + 20);
+            const maxY = Math.min(480, Math.max(...poly.map(p => p.y)) + 20);
+
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const sx = vw / 640;
+            const sy = vh / 480;
+
+            const srcX = Math.max(0, minX * sx);
+            const srcY = Math.max(0, minY * sy);
+            const srcW = Math.min(vw - srcX, (maxX - minX) * sx);
+            const srcH = Math.min(vh - srcY, (maxY - minY) * sy);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(800, Math.round(srcW));
+            canvas.height = Math.round(canvas.width * (srcH / srcW));
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/jpeg', 0.95);
+          } catch (err) {
+            console.warn('captureCurrentFrame error:', err);
+            return null;
+          }
+        }
+      };
+    }
+  }, [cctvRef]);
 
   // Listen for reset/clear events to reset client trackers synchronously
   useEffect(() => {
@@ -1295,6 +1346,7 @@ export default function CCTVMonitor({
       frameCount++;
       const now = Date.now();
       if (now - lastFpsCalc >= 1000) {
+        fpsRef.current = frameCount;
         setFps(frameCount);
         frameCount = 0;
         lastFpsCalc = now;
@@ -1681,8 +1733,8 @@ export default function CCTVMonitor({
         currentActivity = 'Waiting for RFID authorization';
       }
 
-      if (typeof onActivityChange === 'function' && frameCount % 30 === 0) {
-        onActivityChange(currentActivity);
+      if (typeof onActivityChangeRef.current === 'function' && frameCount % 30 === 0) {
+        onActivityChangeRef.current(currentActivity);
       }
 
       // Draw Status Pill (Top Left)
@@ -1708,7 +1760,7 @@ export default function CCTVMonitor({
         ctx.font = '600 10px JetBrains Mono, monospace';
         ctx.fillText('LIVE CCTV STREAM', w - 170, 26);
         ctx.fillStyle = '#94a3b8';
-        ctx.fillText(`${new Date().toLocaleTimeString()} • ${fps} FPS`, w - 170, 44);
+        ctx.fillText(`${new Date().toLocaleTimeString()} • ${fpsRef.current} FPS`, w - 170, 44);
       }
 
       animId = requestAnimationFrame(render);
@@ -1716,6 +1768,7 @@ export default function CCTVMonitor({
 
     render();
     return () => cancelAnimationFrame(animId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraActive, isPointInPolygon]);
 
   // Interactive Corner Dragging (Pointer Events)

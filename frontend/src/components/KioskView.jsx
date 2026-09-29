@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CreditCard, CheckCircle2, Clock, AlertTriangle, ShieldCheck, Lock, RotateCcw, Package, ArrowRight, Sparkles } from 'lucide-react';
+import { CreditCard, CheckCircle2, AlertTriangle, ShieldCheck, Lock, RotateCcw, ArrowRight } from 'lucide-react';
 
 const DURATION_PRESETS = [
   { value: 5, label: '5 Min' },
@@ -10,7 +10,7 @@ const DURATION_PRESETS = [
   { value: 10080, label: '7 Days' }
 ];
 
-export default function KioskView({ socket, onOpenAdmin }) {
+export default function KioskView({ socket, onOpenAdmin, onCaptureCurrentFrame }) {
   // Kiosk step: 'WAITING_RFID' | 'RFID_VERIFIED' | 'PLACEMENT_ACTIVE' | 'PLACEMENT_COMPLETED'
   const [step, setStep] = useState('WAITING_RFID');
   const [errorMsg, setErrorMsg] = useState(null);
@@ -38,6 +38,9 @@ export default function KioskView({ socket, onOpenAdmin }) {
   const [timeRemainingSec, setTimeRemainingSec] = useState(300);
   const [completedPlacement, setCompletedPlacement] = useState(null);
   const [autoResetSec, setAutoResetSec] = useState(5);
+  const [isConfirmingPlacement, setIsConfirmingPlacement] = useState(false);
+  const [itemDetectedInROI, setItemDetectedInROI] = useState(false);
+  const [_detectedItemInfo, setDetectedItemInfo] = useState(null);
 
   const resetTimerRef = useRef(null);
   const countdownTimerRef = useRef(null);
@@ -54,6 +57,9 @@ export default function KioskView({ socket, onOpenAdmin }) {
     setIsCustomDuration(false);
     setCustomValue(45);
     setCustomUnit('minutes');
+    setIsConfirmingPlacement(false);
+    setItemDetectedInROI(false);
+    setDetectedItemInfo(null);
     setFormData({
       item_name: '',
       serial_number: '',
@@ -122,12 +128,22 @@ export default function KioskView({ socket, onOpenAdmin }) {
       }
     };
 
+    // Listen for candidate item detected inside ROI
+    const onItemDetected = (data) => {
+      if (step === 'PLACEMENT_ACTIVE') {
+        setItemDetectedInROI(true);
+        setDetectedItemInfo(data);
+      }
+    };
+
     socket.on('rfid_scanned', onRfidScanned);
     socket.on('kiosk_placement_success', onKioskSuccess);
+    socket.on('kiosk_item_detected', onItemDetected);
 
     return () => {
       socket.off('rfid_scanned', onRfidScanned);
       socket.off('kiosk_placement_success', onKioskSuccess);
+      socket.off('kiosk_item_detected', onItemDetected);
     };
   }, [socket, step]);
 
@@ -218,7 +234,7 @@ export default function KioskView({ socket, onOpenAdmin }) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ registration_id: data.registration.id })
               }).catch(() => {});
-              resetKiosk('Placement time expired. No item was detected.');
+              resetKiosk('Placement session expired. Time ran out before clicking "OBJECT PLACED".');
               return 0;
             }
             return prev - 1;
@@ -248,6 +264,57 @@ export default function KioskView({ socket, onOpenAdmin }) {
         return prev - 1;
       });
     }, 1000);
+  };
+
+  // Manual Confirmation: Employee clicks "OBJECT PLACED" button
+  const handleConfirmObjectPlaced = async () => {
+    if (!activeItem || isConfirmingPlacement) return;
+    setIsConfirmingPlacement(true);
+    setErrorMsg(null);
+
+    // Stop countdown timer immediately
+    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
+
+    // Grab direct high-res optical frame from local camera if available
+    let imageBase64 = null;
+    if (typeof onCaptureCurrentFrame === 'function') {
+      try {
+        imageBase64 = onCaptureCurrentFrame();
+      } catch (err) {
+        console.warn('Could not grab camera frame from local monitor:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/kiosk/confirm-placement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          registration_id: activeItem.id,
+          imageBase64: imageBase64 || null,
+          objectType: activeItem.item_name
+        })
+      });
+
+      const data = await res.json();
+      setIsConfirmingPlacement(false);
+
+      if (res.ok && data.success) {
+        setCompletedPlacement({
+          ...data,
+          itemName: activeItem.item_name,
+          employeeName: verifiedEmployee?.name || activeItem.employee_name,
+          evidenceImage: data.evidenceImage
+        });
+        setStep('PLACEMENT_COMPLETED');
+        startAutoResetCountdown();
+      } else {
+        setErrorMsg(data.error || 'Failed to confirm placement.');
+      }
+    } catch (err) {
+      setIsConfirmingPlacement(false);
+      setErrorMsg('Network error confirming placement.');
+    }
   };
 
   // Format countdown clock dynamically (Seconds, Minutes, Hours, Days)
@@ -855,14 +922,68 @@ export default function KioskView({ socket, onOpenAdmin }) {
               display: 'flex',
               alignItems: 'center',
               gap: '10px',
-              background: 'rgba(255, 255, 255, 0.04)',
-              padding: '8px 16px',
-              borderRadius: '8px',
-              fontSize: '0.8rem',
-              color: '#94A3B8'
+              background: itemDetectedInROI ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.04)',
+              border: itemDetectedInROI ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(255, 255, 255, 0.08)',
+              padding: '10px 18px',
+              borderRadius: '10px',
+              fontSize: '0.85rem',
+              color: itemDetectedInROI ? '#34D399' : '#94A3B8',
+              fontWeight: itemDetectedInROI ? 700 : 500
             }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#3B82F6', animation: 'pulse 1.5s infinite', display: 'inline-block' }} />
-              <span>Sensors detecting placement in real time...</span>
+              <span style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: itemDetectedInROI ? '#10B981' : '#3B82F6',
+                boxShadow: itemDetectedInROI ? '0 0 10px #10B981' : 'none',
+                animation: itemDetectedInROI ? 'none' : 'pulse 1.5s infinite',
+                display: 'inline-block'
+              }} />
+              <span>
+                {itemDetectedInROI
+                  ? '✓ Item detected in Red Tag Area! Click "OBJECT PLACED" below to capture evidence.'
+                  : 'Sensors monitoring Red Tag Area in real time...'}
+              </span>
+            </div>
+
+            {/* Primary Action Button: "OBJECT PLACED" */}
+            <button
+              type="button"
+              id="btn-kiosk-object-placed"
+              onClick={handleConfirmObjectPlaced}
+              disabled={isConfirmingPlacement}
+              style={{
+                width: '100%',
+                maxWidth: '380px',
+                marginTop: '10px',
+                background: itemDetectedInROI
+                  ? 'linear-gradient(135deg, #059669 0%, #10B981 100%)'
+                  : 'linear-gradient(135deg, #2563EB 0%, #10B981 100%)',
+                color: '#FFFFFF',
+                padding: '18px 24px',
+                borderRadius: '14px',
+                border: 'none',
+                fontWeight: 800,
+                fontSize: '1.25rem',
+                letterSpacing: '1px',
+                cursor: isConfirmingPlacement ? 'wait' : 'pointer',
+                boxShadow: itemDetectedInROI
+                  ? '0 10px 30px rgba(16, 185, 129, 0.5)'
+                  : '0 10px 30px rgba(37, 99, 235, 0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                transition: 'all 0.2s ease',
+                transform: isConfirmingPlacement ? 'scale(0.98)' : 'scale(1)'
+              }}
+            >
+              <CheckCircle2 size={26} />
+              <span>{isConfirmingPlacement ? 'CAPTURING EVIDENCE...' : 'OBJECT PLACED'}</span>
+            </button>
+
+            <div style={{ fontSize: '0.82rem', color: '#94A3B8', maxWidth: '360px', lineHeight: 1.4 }}>
+              After placing your item in the Red Tag polygon, click <strong>"OBJECT PLACED"</strong> to capture photographic evidence and conclude the session.
             </div>
 
             <button
@@ -878,7 +999,7 @@ export default function KioskView({ socket, onOpenAdmin }) {
                 resetKiosk('Placement cancelled by operator.');
               }}
               style={{
-                marginTop: '10px',
+                marginTop: '8px',
                 background: 'transparent',
                 border: '1px solid rgba(255, 255, 255, 0.15)',
                 color: '#94A3B8',
@@ -909,11 +1030,11 @@ export default function KioskView({ socket, onOpenAdmin }) {
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: '20px'
+            gap: '16px'
           }}>
             <div style={{
-              width: '80px',
-              height: '80px',
+              width: '76px',
+              height: '76px',
               borderRadius: '50%',
               background: 'rgba(16, 185, 129, 0.15)',
               border: '2px solid #10B981',
@@ -922,7 +1043,7 @@ export default function KioskView({ socket, onOpenAdmin }) {
               justifyContent: 'center',
               boxShadow: '0 0 30px rgba(16, 185, 129, 0.35)'
             }}>
-              <CheckCircle2 size={46} color="#10B981" />
+              <CheckCircle2 size={42} color="#10B981" />
             </div>
 
             <h2 style={{
@@ -942,16 +1063,38 @@ export default function KioskView({ socket, onOpenAdmin }) {
               lineHeight: 1.6,
               margin: '0'
             }}>
-              Your item has been registered successfully.
+              Your item <strong style={{ color: '#93C5FD' }}>{completedPlacement?.itemName || activeItem?.item_name}</strong> has been registered successfully.
               <br />
               <strong style={{ color: '#10B981' }}>You may leave the area.</strong>
             </p>
+
+            {/* Display Captured High-Resolution Evidence Photo */}
+            {completedPlacement?.evidenceImage && (
+              <div style={{
+                marginTop: '6px',
+                borderRadius: '12px',
+                overflow: 'hidden',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                maxWidth: '320px',
+                background: '#0B0F19',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)'
+              }}>
+                <img
+                  src={`/evidence/${completedPlacement.evidenceImage}`}
+                  alt="Captured Placement Evidence"
+                  style={{ width: '100%', height: 'auto', display: 'block', maxHeight: '180px', objectFit: 'contain' }}
+                />
+                <div style={{ padding: '6px 12px', fontSize: '0.75rem', color: '#10B981', fontWeight: 600 }}>
+                  ✓ Evidence Captured: {completedPlacement.evidenceImage}
+                </div>
+              </div>
+            )}
 
             <button
               type="button"
               onClick={() => resetKiosk()}
               style={{
-                marginTop: '12px',
+                marginTop: '10px',
                 background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
                 color: '#FFF',
                 padding: '12px 28px',

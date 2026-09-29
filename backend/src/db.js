@@ -641,6 +641,10 @@ export function createKioskRegistration(data) {
   return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(id);
 }
 
+export function getKioskRegistrationById(id) {
+  return db.prepare('SELECT * FROM kiosk_registrations WHERE id = ?').get(id);
+}
+
 export function expireOldKioskRegistrations() {
   const now = new Date().toISOString();
   db.prepare(`

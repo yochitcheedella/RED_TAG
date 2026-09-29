@@ -53,6 +53,15 @@ export default function App() {
   const [selectedEvidenceEvent, setSelectedEvidenceEvent] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  const cctvMonitorRef = useRef(null);
+
+  const handleCaptureCurrentFrame = useCallback(() => {
+    if (cctvMonitorRef.current && typeof cctvMonitorRef.current.captureCurrentFrame === 'function') {
+      return cctvMonitorRef.current.captureCurrentFrame();
+    }
+    return null;
+  }, []);
+
   // Authenticated Data Fetching (Strictly executed when Admin is verified)
   const fetchAdminData = useCallback(async (tokenToUse) => {
     const token = tokenToUse || adminToken || sessionStorage.getItem('redtag_admin_token');
@@ -210,6 +219,7 @@ export default function App() {
       ));
     });
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSocket(s);
 
     return () => {
@@ -305,13 +315,22 @@ export default function App() {
   };
 
   // ─────────────────────────────────────────────────────────────
-  // VIEW MODE 1: EMPLOYEE KIOSK (Rule 1 & 2: Zero Admin Leaks)
+  // VIEW MODE 1 & 2: EMPLOYEE KIOSK & ADMIN PORTAL
   // ─────────────────────────────────────────────────────────────
-  if (viewMode === 'kiosk') {
-    return (
-      <>
+  const openAlertsCount = events.filter(e =>
+    (e.event_type === 'UNAUTHORIZED_PLACEMENT' || e.alert_status === 'ALERT_TRIGGERED' || e.alert_status === 'OPEN') &&
+    e.status !== 'RESOLVED' && e.alert_status !== 'RESOLVED'
+  ).length;
+
+  return (
+    <>
+      {/* ─────────────────────────────────────────────────────────────
+          VIEW MODE 1: EMPLOYEE KIOSK (Rule 1 & 2: Zero Admin Leaks)
+      ────────────────────────────────────────────────────────────── */}
+      <div style={{ display: viewMode === 'kiosk' ? 'block' : 'none', minHeight: '100vh' }}>
         <KioskView
           socket={socket}
+          onCaptureCurrentFrame={handleCaptureCurrentFrame}
           onOpenAdmin={() => {
             if (adminToken) {
               setViewMode('admin');
@@ -333,60 +352,53 @@ export default function App() {
             onCancel={() => setShowAdminLogin(false)}
           />
         )}
-      </>
-    );
-  }
+      </div>
 
-  // ─────────────────────────────────────────────────────────────
-  // VIEW MODE 2: ADMINISTRATOR PORTAL (Rule 3, 4, & 10)
-  // ─────────────────────────────────────────────────────────────
-  const openAlertsCount = events.filter(e =>
-    (e.event_type === 'UNAUTHORIZED_PLACEMENT' || e.alert_status === 'ALERT_TRIGGERED' || e.alert_status === 'OPEN') &&
-    e.status !== 'RESOLVED' && e.alert_status !== 'RESOLVED'
-  ).length;
+      {/* ─────────────────────────────────────────────────────────────
+          VIEW MODE 2: ADMINISTRATOR PORTAL (Rule 3, 4, & 10)
+      ────────────────────────────────────────────────────────────── */}
+      <div style={{ display: viewMode === 'admin' ? 'flex' : 'none', minHeight: '100vh', flexDirection: 'column', background: 'var(--bg-core)' }}>
+        {/* Global Admin Header */}
+        <Header
+          systemStatus={systemStatus}
+          activeToken={activeToken}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onLogoutToKiosk={handleLogoutToKiosk}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          cameraActive={cameraActive}
+          alertsCount={openAlertsCount}
+          userRole={userRole}
+          setUserRole={setUserRole}
+        />
 
-  return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-core)' }}>
-      {/* Global Admin Header */}
-      <Header
-        systemStatus={systemStatus}
-        activeToken={activeToken}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onLogoutToKiosk={handleLogoutToKiosk}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        cameraActive={cameraActive}
-        alertsCount={openAlertsCount}
-        userRole={userRole}
-        setUserRole={setUserRole}
-      />
+        {/* Main Admin Operational Container */}
+        <main style={{
+          flex: 1,
+          padding: '24px',
+          maxWidth: '1600px',
+          width: '100%',
+          margin: '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '20px'
+        }}>
+          {/* Active Unauthorized Placement Banner */}
+          {unauthorizedAlert && (
+            <AlertPanel
+              alert={unauthorizedAlert}
+              onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+              onDismiss={() => setUnauthorizedAlert(null)}
+            />
+          )}
 
-      {/* Main Admin Operational Container */}
-      <main style={{
-        flex: 1,
-        padding: '24px',
-        maxWidth: '1600px',
-        width: '100%',
-        margin: '0 auto',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '20px'
-      }}>
-        {/* Active Unauthorized Placement Banner */}
-        {unauthorizedAlert && (
-          <AlertPanel
-            alert={unauthorizedAlert}
-            onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-            onDismiss={() => setUnauthorizedAlert(null)}
-          />
-        )}
+          {/* Tab 1: Placements Manager */}
+          <div style={{ display: activeTab === 'placements' ? 'block' : 'none' }}>
+            <PlacementsManager adminToken={adminToken} />
+          </div>
 
-        {/* Tab Route Switching */}
-        {activeTab === 'placements' ? (
-          /* Rule 4: Active Placements & Details */
-          <PlacementsManager adminToken={adminToken} />
-        ) : activeTab === 'monitor' ? (
-          <>
+          {/* Tab 2: Live Monitor (CCTVMonitor remains mounted persistently) */}
+          <div style={{ display: activeTab === 'monitor' ? 'block' : 'none' }}>
             {/* Four Primary KPI Cards */}
             <KPIMetricsBar
               events={events}
@@ -403,6 +415,7 @@ export default function App() {
             }}>
               {/* Live Red Tag Area Camera & Polygon */}
               <CCTVMonitor
+                cctvRef={cctvMonitorRef}
                 roi={roi}
                 onSaveROI={handleSaveROI}
                 telemetry={telemetry}
@@ -436,36 +449,47 @@ export default function App() {
               events={events}
               onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
             />
-          </>
-        ) : activeTab === 'alerts' ? (
-          <AlertsManager
-            socket={socket}
-            onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-          />
-        ) : activeTab === 'events' ? (
-          <EventsManager
-            events={events}
-            onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-          />
-        ) : activeTab === 'employees' ? (
-          <EmployeeManager
-            employees={employees}
-            onSaveEmployee={handleSaveEmployee}
-            onDeleteEmployee={handleDeleteEmployee}
-            onSimulateRFID={handleSimulateRFID}
-          />
-        ) : (
-          <ReportingPanel events={events} />
-        )}
-      </main>
+          </div>
 
-      {/* Evidence Inspector Modal */}
-      {selectedEvidenceEvent && (
-        <EvidenceModal
-          event={selectedEvidenceEvent}
-          onClose={() => setSelectedEvidenceEvent(null)}
-        />
-      )}
+          {/* Tab 3: Alerts Manager */}
+          <div style={{ display: activeTab === 'alerts' ? 'block' : 'none' }}>
+            <AlertsManager
+              socket={socket}
+              onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+            />
+          </div>
+
+          {/* Tab 4: Events Log */}
+          <div style={{ display: activeTab === 'events' ? 'block' : 'none' }}>
+            <EventsManager
+              events={events}
+              onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+            />
+          </div>
+
+          {/* Tab 5: Employees Manager */}
+          <div style={{ display: activeTab === 'employees' ? 'block' : 'none' }}>
+            <EmployeeManager
+              employees={employees}
+              onSaveEmployee={handleSaveEmployee}
+              onDeleteEmployee={handleDeleteEmployee}
+              onSimulateRFID={handleSimulateRFID}
+            />
+          </div>
+
+          {/* Tab 6: Reports */}
+          <div style={{ display: activeTab === 'reports' ? 'block' : 'none' }}>
+            <ReportingPanel events={events} />
+          </div>
+        </main>
+
+        {/* Evidence Inspector Modal */}
+        {selectedEvidenceEvent && (
+          <EvidenceModal
+            event={selectedEvidenceEvent}
+            onClose={() => setSelectedEvidenceEvent(null)}
+          />
+        )}
 
       {/* System Settings & Developer Tools Modal */}
       {isSettingsOpen && (
@@ -476,6 +500,7 @@ export default function App() {
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
