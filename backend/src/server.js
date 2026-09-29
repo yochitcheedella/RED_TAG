@@ -10,7 +10,6 @@ import apiRouter from './routes/api.js';
 import { rfidService } from './services/rfidService.js';
 import { visionService } from './services/visionService.js';
 import { correlationEngine } from './services/correlationEngine.js';
-import { requireAdmin } from './middleware/auth.js';
 
 dotenv.config();
 
@@ -35,8 +34,6 @@ app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// Protect evidence directory with administrator authentication (Rule 9: Evidence Privacy)
-app.use('/evidence', requireAdmin);
 
 // Serve cropped object evidence images with multi-path resolution
 const evidenceDir = path.resolve(__dirname, '../uploads/evidence');
