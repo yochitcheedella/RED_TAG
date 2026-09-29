@@ -316,8 +316,8 @@ export default function PlacementsManager({ adminToken }) {
             border: '1px solid var(--border-subtle)',
             borderRadius: 'var(--radius-lg)',
             width: '100%',
-            maxWidth: '680px',
-            maxHeight: '90vh',
+            maxWidth: '820px',
+            maxHeight: '92vh',
             overflowY: 'auto',
             boxShadow: '0 25px 60px rgba(0, 0, 0, 0.8)',
             display: 'flex',
@@ -479,16 +479,18 @@ export default function PlacementsManager({ adminToken }) {
                     borderRadius: '8px',
                     overflow: 'hidden',
                     border: '1px solid var(--border-subtle)',
-                    background: '#000',
+                    background: '#0a0f1d',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    maxHeight: '260px'
+                    minHeight: '280px',
+                    maxHeight: '440px',
+                    position: 'relative'
                   }}>
                     <img
                       src={`/evidence/${selectedPlacement.evidence_image}?token=${adminToken}`}
                       alt="Placement Evidence"
-                      style={{ maxWidth: '100%', maxHeight: '260px', objectFit: 'contain' }}
+                      style={{ maxWidth: '100%', maxHeight: '440px', width: 'auto', height: 'auto', objectFit: 'contain' }}
                       onError={(e) => {
                         e.currentTarget.style.display = 'none';
                         e.currentTarget.nextSibling.style.display = 'flex';

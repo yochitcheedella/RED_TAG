@@ -673,9 +673,9 @@ export default function CCTVMonitor({
     }
   };
 
-  // Section 8 & 30: Strictly crop ONLY the target object's bounding box + 15px padding
-  // ZERO-HUMAN PRIVACY STANDARD: Never capture human faces or bodies in evidence frames.
-  const cropTargetObjectOnly = (video, tracker, padding = 15) => {
+  // Section 8 & 30: High-Resolution, Complete Object Evidence Capture with Generous Context Padding
+  // ZERO-HUMAN PRIVACY STANDARD: Captures the COMPLETE object while masking any accidental worker face overlap.
+  const cropTargetObjectOnly = (video, tracker, padding = 45) => {
     try {
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
 
@@ -690,82 +690,76 @@ export default function CCTVMonitor({
       const sx = vw / 640;
       const sy = vh / 480;
 
+      // Generous padding to capture the entire object without clipping edges or contours
       const pad = padding;
       let cropX = Math.max(0, tracker.x - pad);
       let cropY = Math.max(0, tracker.y - pad);
-      let cropW = Math.min(640 - cropX, Math.max(tracker.width + pad * 2, 40));
-      let cropH = Math.min(480 - cropY, Math.max(tracker.height + pad * 2, 40));
+      let cropW = Math.min(640 - cropX, Math.max(tracker.width + pad * 2, 50));
+      let cropH = Math.min(480 - cropY, Math.max(tracker.height + pad * 2, 50));
 
-      // Height clamping: Placed floor objects are never taller than 200px.
-      // If box is too tall, clamp top boundary downwards towards the floor
-      if (cropH > 200) {
-        const excess = cropH - 200;
-        cropY += excess;
-        cropH = 200;
-      }
-
-      // Check against all detected persons: if a person's upper body / face is above or near the object,
-      // clamp cropY so it never includes the person's face/torso
+      // Check against all detected persons: if a person's upper body / face is above the object,
+      // mask that area without truncating the physical object itself
       const persons = detectedPersonsRef.current || [];
-      for (const p of persons) {
-        // Face/head zone is top 45% of human bounding box
-        const faceBottomY = p.y + p.height * 0.45;
-        if (cropY < faceBottomY && (cropX + cropW >= p.x) && (cropX <= p.x + p.width)) {
-          const adjustedY = Math.min(p.y + p.height * 0.50, tracker.y);
-          if (adjustedY > cropY) {
-            cropH = Math.max(40, cropH - (adjustedY - cropY));
-            cropY = adjustedY;
-          }
-        }
-      }
 
       const srcX = Math.max(0, cropX * sx);
       const srcY = Math.max(0, cropY * sy);
       const srcW = Math.min(vw - srcX, cropW * sx);
       const srcH = Math.min(vh - srcY, cropH * sy);
 
+      // High-Resolution Canvas: Minimum 760px wide or native HD camera sensor resolution
+      const targetW = Math.max(Math.round(srcW), 760);
+      const targetH = Math.round(targetW * (srcH / srcW));
+
       const canvas = document.createElement('canvas');
-      canvas.width = Math.round(cropW);
-      canvas.height = Math.round(cropH);
+      canvas.width = targetW;
+      canvas.height = targetH;
       const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
-      // Draw ONLY the target object bounding box crop
-      ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, canvas.width, canvas.height);
+      // Draw complete high-resolution object from camera sensor
+      ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, targetW, targetH);
 
-      // ZERO-FACE PRIVACY PROTECTION: Mask any accidental overlap with human head/torso pixels
+      // Scale factors from 640x480 crop coordinate to target high-res canvas
+      const scaleX = targetW / cropW;
+      const scaleY = targetH / cropH;
+
+      // ZERO-FACE PRIVACY PROTECTION: Mask only true human face/head regions if overlapping
       for (const p of persons) {
-        const faceBottomY = p.y + p.height * 0.45;
+        const faceBottomY = p.y + p.height * 0.40;
         const iX1 = Math.max(cropX, p.x);
         const iY1 = Math.max(cropY, p.y);
         const iX2 = Math.min(cropX + cropW, p.x + p.width);
         const iY2 = Math.min(cropY + cropH, faceBottomY);
 
         if (iX2 > iX1 && iY2 > iY1) {
-          const mX = Math.round(iX1 - cropX);
-          const mY = Math.round(iY1 - cropY);
-          const mW = Math.round(iX2 - iX1);
-          const mH = Math.round(iY2 - iY1);
+          const mX = Math.round((iX1 - cropX) * scaleX);
+          const mY = Math.round((iY1 - cropY) * scaleY);
+          const mW = Math.round((iX2 - iX1) * scaleX);
+          const mH = Math.round((iY2 - iY1) * scaleY);
           ctx.fillStyle = '#0f172a';
           ctx.fillRect(mX, mY, mW, mH);
           ctx.strokeStyle = '#38bdf8';
-          ctx.lineWidth = 1;
+          ctx.lineWidth = 2;
           ctx.strokeRect(mX, mY, mW, mH);
           ctx.fillStyle = '#94a3b8';
-          ctx.font = '700 8.5px JetBrains Mono, monospace';
-          ctx.fillText('PRIVACY MASK (HUMAN EXCLUDED)', mX + 4, mY + Math.min(14, mH / 2));
+          ctx.font = 'bold 11px JetBrains Mono, monospace';
+          ctx.fillText('PRIVACY MASK (HUMAN EXCLUDED)', mX + 8, mY + Math.min(18, mH / 2));
         }
       }
 
-      // Subtle forensic label at bottom of crop
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.fillRect(0, canvas.height - 18, canvas.width, 18);
+      // Professional forensic watermark banner
+      const bannerH = Math.max(30, Math.round(targetH * 0.055));
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+      ctx.fillRect(0, canvas.height - bannerH, canvas.width, bannerH);
       ctx.fillStyle = tracker.authorized ? '#34d399' : '#f87171';
-      ctx.font = '700 9px JetBrains Mono, monospace';
-      ctx.fillText(`● ${tracker.objectId || 'TRACK'} | ${tracker.bestClass.toUpperCase()} (OBJECT EVIDENCE)`, 6, canvas.height - 6);
+      ctx.font = `bold ${Math.round(bannerH * 0.44)}px JetBrains Mono, monospace`;
+      const statusLabel = tracker.authorized ? 'AUTHORIZED' : 'UNAUTHORIZED PLACEMENT';
+      ctx.fillText(`● [${statusLabel}] ${tracker.objectId || 'TRACK'} | ${tracker.bestClass.toUpperCase()} (HD OPTICAL EVIDENCE: ${targetW}x${targetH}px)`, 14, canvas.height - Math.round(bannerH * 0.28));
 
       const sharpness = computeSharpness(ctx, canvas.width, canvas.height);
       return {
-        dataUrl: canvas.toDataURL('image/jpeg', 0.92),
+        dataUrl: canvas.toDataURL('image/jpeg', 0.95),
         sharpness
       };
     } catch (err) {
@@ -776,23 +770,23 @@ export default function CCTVMonitor({
 
   const captureFallbackBadge = (tracker) => {
     const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 240;
+    canvas.width = 720;
+    canvas.height = 480;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, 320, 240);
+    ctx.fillRect(0, 0, 720, 480);
     ctx.strokeStyle = tracker.authorized ? '#10b981' : '#ef4444';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(40, 40, 240, 160);
+    ctx.lineWidth = 4;
+    ctx.strokeRect(40, 40, 640, 400);
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 16px Inter, sans-serif';
+    ctx.font = 'bold 28px Inter, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(tracker.bestClass.toUpperCase(), 160, 110);
-    ctx.font = '12px JetBrains Mono, monospace';
+    ctx.fillText(tracker.bestClass.toUpperCase(), 360, 210);
+    ctx.font = '16px JetBrains Mono, monospace';
     ctx.fillStyle = '#94a3b8';
-    ctx.fillText(tracker.objectId || 'TRACK-001', 160, 135);
-    ctx.fillText('STRICT OBJECT EVIDENCE CROP', 160, 155);
-    return canvas.toDataURL('image/jpeg', 0.92);
+    ctx.fillText(tracker.objectId || 'TRACK-001', 360, 260);
+    ctx.fillText('HIGH-RESOLUTION EVIDENCE RECORD', 360, 290);
+    return canvas.toDataURL('image/jpeg', 0.95);
   };
 
   // Section 10 & 11: Select best frame belonging to this NEW object's tracking ID
@@ -802,7 +796,7 @@ export default function CCTVMonitor({
       console.log(`📸 [EVIDENCE] Best frame selected for ${tracker.objectId} from ${tracker.candidateFrames.length} candidates (Score: ${Math.round(tracker.candidateFrames[0].score)})`);
       return tracker.candidateFrames[0].cropDataUrl;
     }
-    const directCrop = cropTargetObjectOnly(videoRef.current, tracker, 15);
+    const directCrop = cropTargetObjectOnly(videoRef.current, tracker, 50);
     return directCrop ? directCrop.dataUrl : captureFallbackBadge(tracker);
   };
 
@@ -1158,7 +1152,7 @@ export default function CCTVMonitor({
             if (!bestMatch.candidateFrames) bestMatch.candidateFrames = [];
             if (bestMatch.candidateFrames.length < 8 && (now - (bestMatch.lastCandidateTime || 0) >= 250)) {
               bestMatch.lastCandidateTime = now;
-              const candCrop = cropTargetObjectOnly(video, bestMatch, 15);
+              const candCrop = cropTargetObjectOnly(video, bestMatch, 50);
               if (candCrop) {
                 bestMatch.candidateFrames.push({
                   cropDataUrl: candCrop.dataUrl,
@@ -1236,7 +1230,7 @@ export default function CCTVMonitor({
 
           // Capture initial candidate frame
           if (video && video.readyState >= 2) {
-            const candCrop = cropTargetObjectOnly(video, newTracker, 15);
+            const candCrop = cropTargetObjectOnly(video, newTracker, 50);
             if (candCrop) {
               newTracker.candidateFrames.push({
                 cropDataUrl: candCrop.dataUrl,

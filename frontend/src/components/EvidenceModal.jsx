@@ -55,7 +55,7 @@ export default function EvidenceModal({ event, onClose }) {
         className="soc-card"
         style={{
           width: '100%',
-          maxWidth: '680px',
+          maxWidth: '840px',
           boxShadow: 'var(--shadow-modal)',
           overflow: 'hidden',
           display: 'flex',
@@ -123,7 +123,8 @@ export default function EvidenceModal({ event, onClose }) {
               border: '1px solid var(--border-medium)',
               borderRadius: 'var(--radius-sm)',
               position: 'relative',
-              height: '320px',
+              height: '440px',
+              minHeight: '440px',
               overflow: 'hidden',
               display: 'flex',
               alignItems: 'center',

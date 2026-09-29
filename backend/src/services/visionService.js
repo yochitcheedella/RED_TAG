@@ -307,7 +307,7 @@ class VisionService {
 
   /**
    * PRIVACY REQUIREMENT (Rule 17 / Section 54):
-   * Crop strictly the object bounding box + configurable padding.
+   * Crop strictly the object bounding box + generous 50px context padding.
    * NEVER capture human faces, employees, or full CCTV frames.
    */
   async cropAndSaveObjectEvidence(imageBuffer, box, objectLabel) {
@@ -316,7 +316,7 @@ class VisionService {
       const imgWidth = metadata.width || 640;
       const imgHeight = metadata.height || 480;
 
-      const padding = parseInt(getSetting('evidence_padding_px') || '20', 10);
+      const padding = parseInt(getSetting('evidence_padding_px') || '50', 10);
 
       const left   = Math.max(0, Math.min(Math.round(box.x - padding), imgWidth - 10));
       const top    = Math.max(0, Math.min(Math.round(box.y - padding), imgHeight - 10));
@@ -326,12 +326,22 @@ class VisionService {
       const filename = `evidence_${Date.now()}_${objectLabel.toLowerCase().replace(/[^a-z0-9]/g, '')}.jpg`;
       const outputPath = path.join(evidenceDir, filename);
 
-      await sharp(imageBuffer)
-        .extract({ left, top, width, height })
-        .jpeg({ quality: 90 })
+      let pipeline = sharp(imageBuffer).extract({ left, top, width, height });
+
+      // Ensure evidence has high resolution (min 800px wide) for clear forensic inspection
+      if (width < 800) {
+        pipeline = pipeline.resize({
+          width: 800,
+          withoutEnlargement: false,
+          kernel: sharp.kernel.lanczos3
+        });
+      }
+
+      await pipeline
+        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
         .toFile(outputPath);
 
-      console.log(`🔒 Privacy Evidence Saved (Object Crop + ${padding}px): ${filename} [${width}x${height}px]`);
+      console.log(`🔒 High-Res Optical Evidence Saved (Object Crop + ${padding}px): ${filename} [Extracted: ${width}x${height}px, Output: min 800px width @ 95% quality]`);
       return filename;
     } catch (err) {
       console.error('Failed to crop object evidence:', err.message);
@@ -340,32 +350,61 @@ class VisionService {
   }
 
   /**
-   * Fallback synthetic evidence badge (when using simulated/virtual frames)
+   * Fallback synthetic evidence badge (when using simulated/virtual frames) - High Definition
    */
   async generateObjectOnlyBadge(objectLabel, box) {
     try {
       const filename = `evidence_${Date.now()}_${objectLabel.toLowerCase().replace(/[^a-z0-9]/g, '')}.png`;
       const outputPath = path.join(evidenceDir, filename);
 
-      const width = 360;
-      const height = 240;
+      const width = 800;
+      const height = 480;
 
       const svg = `
         <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
-          <rect width="100%" height="100%" fill="#0d1117" />
-          <rect x="10" y="10" width="${width - 20}" height="${height - 20}" fill="#161b22" rx="10" stroke="#30363d" stroke-width="2" />
-          <rect x="20" y="20" width="160" height="24" rx="4" fill="#238636" opacity="0.2" />
-          <text x="30" y="37" fill="#3fb950" font-family="sans-serif" font-size="11" font-weight="bold">🔒 PRIVACY COMPLIANT</text>
-          <rect x="20" y="55" width="${width - 40}" height="1" fill="#30363d" />
-          <rect x="90" y="75" width="180" height="110" rx="8" fill="#21262d" stroke="#f85149" stroke-width="2" stroke-dasharray="4" />
-          <path d="M150 95 L210 95 L225 115 L225 165 L135 165 L135 115 Z" fill="#da3633" opacity="0.8" stroke="#ff7b72" stroke-width="2" />
-          <line x1="135" y1="115" x2="225" y2="115" stroke="#ff7b72" stroke-width="2" />
-          <line x1="180" y1="95" x2="180" y2="165" stroke="#ff7b72" stroke-width="2" />
-          <text x="180" y="205" fill="#f0f6fc" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle">
+          <defs>
+            <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#0b0f19" />
+              <stop offset="100%" stop-color="#161e2e" />
+            </linearGradient>
+            <linearGradient id="boxGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#ef4444" stop-opacity="0.35" />
+              <stop offset="100%" stop-color="#b91c1c" stop-opacity="0.15" />
+            </linearGradient>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#bgGrad)" />
+          <rect x="16" y="16" width="${width - 32}" height="${height - 32}" fill="#0f172a" rx="14" stroke="#334155" stroke-width="2" />
+
+          <!-- Header badge -->
+          <rect x="36" y="36" width="220" height="34" rx="8" fill="#10b981" fill-opacity="0.15" stroke="#059669" stroke-width="1.5" />
+          <text x="50" y="58" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="bold">🔒 ZERO-HUMAN PRIVACY</text>
+
+          <text x="${width - 40}" y="58" fill="#94a3b8" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="600" text-anchor="end">
+            RED TAG ZONE EVIDENCE
+          </text>
+
+          <line x1="36" y1="84" x2="${width - 36}" y2="84" stroke="#1e293b" stroke-width="2" />
+
+          <!-- High-definition simulated object bounding region -->
+          <rect x="180" y="110" width="440" height="240" rx="12" fill="url(#boxGrad)" stroke="#ef4444" stroke-width="3" stroke-dasharray="6 4" />
+
+          <!-- Stylized container/object icon -->
+          <path d="M340 160 L460 160 L490 200 L490 290 L310 290 L310 200 Z" fill="#ef4444" fill-opacity="0.75" stroke="#fca5a5" stroke-width="3" />
+          <line x1="310" y1="200" x2="490" y2="200" stroke="#fca5a5" stroke-width="2.5" />
+          <line x1="400" y1="160" x2="400" y2="290" stroke="#fca5a5" stroke-width="2.5" />
+
+          <!-- Label and metadata -->
+          <text x="400" y="375" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="24" font-weight="800" text-anchor="middle" letter-spacing="1">
             ${objectLabel.toUpperCase()}
           </text>
-          <text x="180" y="222" fill="#8b949e" font-family="sans-serif" font-size="11" text-anchor="middle">
-            CCTV ROI Object Crop (${Math.round(box.width)}x${Math.round(box.height)}px)
+          <text x="400" y="405" fill="#94a3b8" font-family="'JetBrains Mono', monospace" font-size="14" text-anchor="middle">
+            OPTICAL CROP: ${Math.round(box.width)}x${Math.round(box.height)}px (+50px PADDING) | RESOLUTION: ${width}x${height}px
+          </text>
+
+          <!-- Footer banner -->
+          <rect x="16" y="${height - 40}" width="${width - 32}" height="24" fill="#020617" opacity="0.8" rx="4" />
+          <text x="32" y="${height - 24}" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">
+            FORENSIC EVIDENCE CAPTURE SYSTEM • AUTOMATIC ISOLATION OF PHYSICAL OBJECT
           </text>
         </svg>
       `;
