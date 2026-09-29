@@ -441,6 +441,24 @@ export default function PlacementsManager({ adminToken }) {
 
                 <div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
+                    Description
+                  </div>
+                  <div style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '3px' }}>
+                    {selectedPlacement.description || '—'}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
+                    Duration
+                  </div>
+                  <div style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '3px' }}>
+                    {selectedPlacement.placement_duration_min ? `${selectedPlacement.placement_duration_min} Minutes` : '5 Minutes'}
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
                     Status
                   </div>
                   <div style={{ marginTop: '3px' }}>
