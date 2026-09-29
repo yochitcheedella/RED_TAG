@@ -1,18 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import Header from './components/Header';
 import CCTVMonitor from './components/CCTVMonitor';
 import DeviceOperationsPanel from './components/DeviceOperationsPanel';
 import RecentEvents from './components/RecentEvents';
 import EvidenceModal from './components/EvidenceModal';
-import EmployeeManager from './components/EmployeeManager';
 import SettingsModal from './components/SettingsModal';
 import ReportingPanel from './components/ReportingPanel';
 import AlertPanel from './components/AlertPanel';
-import SimulationSuite from './components/SimulationSuite';
+import AlertsManager from './components/AlertsManager';
+import EventsManager from './components/EventsManager';
 import KPIMetricsBar from './components/KPIMetricsBar';
-import JavaDiagnosticsPanel from './components/JavaDiagnosticsPanel';
 import ActiveObjectsPanel from './components/ActiveObjectsPanel';
+import EmployeeManager from './components/EmployeeManager';
 import { sounds } from './utils/audio';
 
 const SOCKET_SERVER = 'http://localhost:3001';
@@ -20,7 +20,7 @@ const SOCKET_SERVER = 'http://localhost:3001';
 export default function App() {
   const [socket, setSocket] = useState(null);
   const [systemStatus, setSystemStatus] = useState(null);
-  const [appMode, setAppMode] = useState('test'); // 'hardware' | 'test'
+  const [appMode, setAppMode] = useState('test');
   const [activeToken, setActiveToken] = useState(null);
   const [roi, setROI] = useState({ x: 160, y: 180, width: 320, height: 240 });
   const [polygonVertices, setPolygonVertices] = useState([
@@ -31,36 +31,35 @@ export default function App() {
   ]);
   const [telemetry, setTelemetry] = useState(null);
   const [events, setEvents] = useState([]);
-  const [employees, setEmployees] = useState([]);
   const [settings, setSettings] = useState(null);
   const [activeObjects, setActiveObjects] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [currentActivity, setCurrentActivity] = useState('Waiting for an object...');
 
-  const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'employees' | 'reports'
+  const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'alerts' | 'events' | 'employees' | 'reports'
+  const [userRole, setUserRole] = useState('admin'); // 'operator' | 'admin' | 'developer' (Section 35)
   const [unauthorizedAlert, setUnauthorizedAlert] = useState(null);
   const [selectedEvidenceEvent, setSelectedEvidenceEvent] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // Initial Data Fetching
+  // Initial Data Fetching from actual database & endpoints
   const fetchAllData = async () => {
     try {
-      const [statusRes, eventsRes, empRes, settingsRes, polyRes, activeRes] = await Promise.all([
-        fetch('/api/status').then(r => r.json()),
-        fetch('/api/events?limit=50').then(r => r.json()),
-        fetch('/api/employees').then(r => r.json()),
-        fetch('/api/settings').then(r => r.json()),
+      const [statusRes, eventsRes, settingsRes, polyRes, activeRes, employeesRes] = await Promise.all([
+        fetch('/api/status').then(r => r.json()).catch(() => null),
+        fetch('/api/events?limit=50').then(r => r.json()).catch(() => []),
+        fetch('/api/settings').then(r => r.json()).catch(() => null),
         fetch('/api/config/polygon').then(r => r.json()).catch(() => null),
-        fetch('/api/objects/active').then(r => r.json()).catch(() => null)
+        fetch('/api/objects/active').then(r => r.json()).catch(() => null),
+        fetch('/api/employees').then(r => r.json()).catch(() => [])
       ]);
 
-      setSystemStatus(statusRes);
-      if (statusRes.appMode) {
-        setAppMode(statusRes.appMode);
-      }
-      if (statusRes.rfid?.activeToken) {
-        setActiveToken(statusRes.rfid.activeToken);
-      }
-      if (statusRes.cctv?.roi) {
-        setROI(statusRes.cctv.roi);
+      if (statusRes) {
+        setSystemStatus(statusRes);
+        if (statusRes.appMode) setAppMode(statusRes.appMode);
+        if (statusRes.rfid?.activeToken) setActiveToken(statusRes.rfid.activeToken);
+        if (statusRes.cctv?.roi) setROI(statusRes.cctv.roi);
       }
       if (polyRes?.floor_tape_roi?.polygon_vertices?.length >= 3) {
         setPolygonVertices(polyRes.floor_tape_roi.polygon_vertices);
@@ -68,9 +67,15 @@ export default function App() {
       if (activeRes?.objects) {
         setActiveObjects(activeRes.objects);
       }
-      setEvents(eventsRes);
-      setEmployees(empRes);
-      setSettings(settingsRes);
+      if (Array.isArray(eventsRes)) {
+        setEvents(eventsRes);
+      }
+      if (settingsRes) {
+        setSettings(settingsRes);
+      }
+      if (Array.isArray(employeesRes)) {
+        setEmployees(employeesRes);
+      }
     } catch (err) {
       console.warn('Backend connection pending:', err.message);
     }
@@ -84,7 +89,7 @@ export default function App() {
     });
 
     s.on('connect', () => {
-      console.log('⚡ Connected to Red Tag Monitoring Backend Socket');
+      console.log('⚡ Connected to RED TAG MONITOR Backend Socket');
     });
 
     s.on('initial_state', (data) => {
@@ -97,7 +102,7 @@ export default function App() {
 
     s.on('rfid_scanned', (data) => {
       if (data.is_authorized) {
-        sounds.playAuthorized();
+        sounds.playAuthorized?.();
         setActiveToken({
           ...data.activeToken,
           uid: data.uid,
@@ -107,7 +112,7 @@ export default function App() {
           is_authorized: true
         });
       } else {
-        sounds.playUnauthorizedAlert();
+        sounds.playUnauthorizedAlert?.();
         setActiveToken({
           uid: data.uid,
           employee_name: data.employee?.name || 'Unregistered Cardholder',
@@ -123,17 +128,26 @@ export default function App() {
     });
 
     s.on('placement_authorized', (data) => {
-      sounds.playAuthorized();
+      sounds.playAuthorized?.();
       setUnauthorizedAlert(null);
+      setCurrentActivity('Authorized placement');
     });
 
     s.on('placement_unauthorized_alert', (data) => {
-      sounds.playUnauthorizedAlert();
+      sounds.playUnauthorizedAlert?.();
       setUnauthorizedAlert(data);
+      setCurrentActivity('Unauthorized placement');
     });
 
     s.on('new_event_logged', (newEvent) => {
       setEvents(prev => [newEvent, ...prev.slice(0, 49)]);
+    });
+
+    s.on('alert_status_changed', (data) => {
+      if (data.status === 'RESOLVED') {
+        setUnauthorizedAlert(null);
+      }
+      fetchAllData();
     });
 
     s.on('vision_telemetry', (data) => {
@@ -150,7 +164,6 @@ export default function App() {
       setROI(newROI);
     });
 
-    // Sync polygon live when backend or Java engine updates it
     s.on('polygon_updated', (vertices) => {
       if (Array.isArray(vertices) && vertices.length >= 3) {
         setPolygonVertices(vertices);
@@ -175,22 +188,58 @@ export default function App() {
         o.object_type !== data.label &&
         o.objectType !== data.label
       ));
+      window.dispatchEvent(new CustomEvent('redtag:object_removed', { detail: data }));
     });
 
     setSocket(s);
 
-    // Poll systemStatus every 8s to keep Header indicators live
     const statusPoll = setInterval(() => {
       fetch('/api/status').then(r => r.json()).then(data => {
         setSystemStatus(data);
         if (data.rfid?.activeToken) setActiveToken(data.rfid.activeToken);
       }).catch(() => {});
-    }, 8000);
+    }, 6000);
 
     return () => {
       s.disconnect();
       clearInterval(statusPoll);
     };
+  }, []);
+
+  // Global USB HID RFID Scanner Listener
+  useEffect(() => {
+    let scanBuffer = '';
+    let lastKeyTime = Date.now();
+
+    const handleGlobalKeyDown = (e) => {
+      const activeTag = document.activeElement?.tagName;
+      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastKeyTime > 500) {
+        scanBuffer = '';
+      }
+      lastKeyTime = now;
+
+      if (e.key === 'Enter') {
+        if (scanBuffer.trim().length >= 3) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (document.activeElement && typeof document.activeElement.blur === 'function') {
+            document.activeElement.blur();
+          }
+          handleSimulateRFID(scanBuffer.trim());
+          scanBuffer = '';
+        }
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        scanBuffer += e.key;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown, true);
   }, []);
 
   // Handlers
@@ -212,15 +261,6 @@ export default function App() {
     });
     setIsSettingsOpen(false);
     fetchAllData();
-  };
-
-  const handleToggleAppMode = async (mode) => {
-    setAppMode(mode);
-    await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_mode: mode })
-    });
   };
 
   const handleSimulateRFID = async (uid) => {
@@ -253,23 +293,31 @@ export default function App() {
     fetchAllData();
   };
 
+  // Compute open alerts count
+  const openAlertsCount = events.filter(e =>
+    (e.alert_status === 'ALERT_TRIGGERED' || (e.authorization_status !== 'AUTHORIZED' && e.event_type !== 'RFID_SCAN')) &&
+    e.alert_status !== 'RESOLVED'
+  ).length;
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-core)' }}>
-      {/* Top SOC Navigation & Telemetry Header */}
+      {/* Global Header (Section 3) */}
       <Header
         systemStatus={systemStatus}
         activeToken={activeToken}
-        appMode={appMode}
-        onToggleAppMode={handleToggleAppMode}
         onOpenSettings={() => setIsSettingsOpen(true)}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
+        cameraActive={cameraActive}
+        alertsCount={openAlertsCount}
+        userRole={userRole}
+        setUserRole={setUserRole}
       />
 
-      {/* Main Workspace */}
+      {/* Main Operational Container */}
       <main style={{
         flex: 1,
-        padding: '20px 24px',
+        padding: '24px',
         maxWidth: '1600px',
         width: '100%',
         margin: '0 auto',
@@ -277,7 +325,7 @@ export default function App() {
         flexDirection: 'column',
         gap: '20px'
       }}>
-        {/* Section 23: Prominent Security Alert Panel */}
+        {/* Active Unauthorized Placement Banner */}
         {unauthorizedAlert && (
           <AlertPanel
             alert={unauthorizedAlert}
@@ -286,22 +334,24 @@ export default function App() {
           />
         )}
 
+        {/* Tab Route Switching */}
         {activeTab === 'monitor' ? (
           <>
-            {/* Real-Time Operational KPI Metrics Bar */}
+            {/* Section 5: Four Primary KPI Cards */}
             <KPIMetricsBar
               events={events}
               systemStatus={systemStatus}
-              activeObjectsCount={telemetry?.objectsInROI?.length || 0}
+              cameraActive={cameraActive}
             />
 
-            {/* Top Grid: CCTV Video Stream & Production Device Operations Panel */}
+            {/* Section 6: Main Live Monitoring Area (65% / 35% Grid) */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
+              gridTemplateColumns: 'minmax(0, 1.85fr) minmax(0, 1fr)',
               gap: '20px',
               alignItems: 'start'
             }}>
+              {/* Left Panel (~65% width): Live Red Tag Area Camera & Polygon */}
               <CCTVMonitor
                 roi={roi}
                 onSaveROI={handleSaveROI}
@@ -311,63 +361,59 @@ export default function App() {
                 activeToken={activeToken}
                 polygonVertices={polygonVertices}
                 onPolygonChange={(newPoly) => setPolygonVertices(newPoly)}
+                onCameraStateChange={setCameraActive}
+                onActivityChange={setCurrentActivity}
               />
 
+              {/* Right Panel (~35% width): System Status, RFID Status, Active Alerts */}
               <DeviceOperationsPanel
                 onSimulateRFID={handleSimulateRFID}
                 activeToken={activeToken}
                 systemStatus={systemStatus}
                 polygonVertices={polygonVertices}
-                appMode={appMode}
-                onToggleAppMode={handleToggleAppMode}
-                onResetPolygon={async () => {
-                  const defaultPoly = [
-                    { x: 130, y: 180 },
-                    { x: 510, y: 180 },
-                    { x: 560, y: 440 },
-                    { x: 80, y: 440 }
-                  ];
-                  setPolygonVertices(defaultPoly);
-                  await fetch('/api/config/polygon', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ polygon_vertices: defaultPoly })
-                  });
-                }}
+                cameraActive={cameraActive}
+                currentActivity={currentActivity}
+                unauthorizedAlert={unauthorizedAlert}
+                onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
               />
             </div>
 
-            {/* Bottom row: SimulationSuite + Event Audit Log */}
-            <SimulationSuite
-              onSimulateRFID={handleSimulateRFID}
-              onSimulatePlacement={handleSimulatePlacement}
-              activeToken={activeToken}
-            />
-
-            {/* Section 32: Active Tracked Objects in Red Tag Area */}
+            {/* Active Tracked Objects in Red Tag Area */}
             <ActiveObjectsPanel activeObjects={activeObjects} />
 
-            {/* Comprehensive Event Audit Log */}
+            {/* Section 12: Recent Events Audit Trail */}
             <RecentEvents
               events={events}
               onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
             />
           </>
-        ) : activeTab === 'reports' ? (
-          <ReportingPanel />
-        ) : activeTab === 'java' ? (
-          <JavaDiagnosticsPanel systemStatus={systemStatus} />
-        ) : (
+        ) : activeTab === 'alerts' ? (
+          /* Section 13: Alerts Page */
+          <AlertsManager
+            socket={socket}
+            onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+          />
+        ) : activeTab === 'events' ? (
+          /* Section 14: Events Page */
+          <EventsManager
+            events={events}
+            onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+          />
+        ) : activeTab === 'employees' ? (
+          /* Employee & RFID Registry Page */
           <EmployeeManager
             employees={employees}
             onSaveEmployee={handleSaveEmployee}
             onDeleteEmployee={handleDeleteEmployee}
             onSimulateRFID={handleSimulateRFID}
           />
+        ) : (
+          /* Section 15: Reports Page */
+          <ReportingPanel events={events} />
         )}
       </main>
 
-      {/* Privacy-Cropped Evidence Inspector Modal */}
+      {/* Object-Focused Evidence Inspector Modal (Section 22) */}
       {selectedEvidenceEvent && (
         <EvidenceModal
           event={selectedEvidenceEvent}
@@ -375,13 +421,17 @@ export default function App() {
         />
       )}
 
-      {/* System Settings Modal */}
+      {/* System Settings & Developer Tools Modal (Section 16 & 17) */}
       {isSettingsOpen && (
         <SettingsModal
           settings={settings}
           systemStatus={systemStatus}
           onSaveSettings={handleSaveSettings}
           onClose={() => setIsSettingsOpen(false)}
+          onSimulateRFID={handleSimulateRFID}
+          onSimulatePlacement={handleSimulatePlacement}
+          activeToken={activeToken}
+          userRole={userRole}
         />
       )}
     </div>

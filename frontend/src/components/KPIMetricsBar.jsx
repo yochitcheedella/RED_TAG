@@ -1,213 +1,250 @@
 import React from 'react';
-import { ShieldCheck, ShieldAlert, Clock, Layers, CheckCircle2, TrendingUp, Cpu } from 'lucide-react';
+import { Package, ShieldCheck, AlertTriangle, Activity } from 'lucide-react';
 
-export default function KPIMetricsBar({ events = [], systemStatus, activeObjectsCount = 0 }) {
-  // Filter today's events
+export default function KPIMetricsBar({ events = [], systemStatus, cameraActive = false }) {
+  // Filter today's placement events
   const todayStr = new Date().toISOString().slice(0, 10);
   const todayEvents = events.filter(e => e.timestamp && e.timestamp.startsWith(todayStr));
 
   const authPlacements = todayEvents.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT');
   const unauthPlacements = todayEvents.filter(e => e.event_type === 'UNAUTHORIZED_PLACEMENT');
-  const totalPlacements = authPlacements.length + unauthPlacements.length;
+  const totalPlacementsToday = authPlacements.length + unauthPlacements.length;
 
-  const complianceRate = totalPlacements > 0
-    ? Math.round((authPlacements.length / totalPlacements) * 100)
-    : 100;
+  // System status calculation based on real camera + RFID + AI
+  const isCameraOnline = cameraActive;
+  const isRfidOnline = Boolean(systemStatus?.rfid?.connected);
+  const isAiOnline = Boolean(systemStatus?.cctv?.aiRunning !== false);
 
-  // Compute average correlation latency
-  const latencies = authPlacements
-    .map(e => e.time_difference)
-    .filter(t => t !== null && t !== undefined && !isNaN(t));
+  let systemStatusValue = 'Monitoring';
+  let systemStatusColor = '#16803C';
+  let systemStatusBg = '#EDFDF2';
+  let systemStatusSubtitle = 'All subsystems operational';
 
-  const avgLatency = latencies.length > 0
-    ? (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(2)
-    : '0.00';
-
-  const inventoryCount = systemStatus?.javaService?.inventoryCount ?? activeObjectsCount;
+  if (!isCameraOnline && !isRfidOnline) {
+    systemStatusValue = 'Offline';
+    systemStatusColor = '#D92D20';
+    systemStatusBg = '#FEF3F2';
+    systemStatusSubtitle = 'Camera and RFID reader offline';
+  } else if (!isCameraOnline) {
+    systemStatusValue = 'Attention';
+    systemStatusColor = '#D97706';
+    systemStatusBg = '#FFFBEB';
+    systemStatusSubtitle = 'Camera stream disconnected';
+  } else if (!isRfidOnline && systemStatus?.appMode === 'hardware') {
+    systemStatusValue = 'Attention';
+    systemStatusColor = '#D97706';
+    systemStatusBg = '#FFFBEB';
+    systemStatusSubtitle = 'RFID reader not detected';
+  } else if (!isAiOnline) {
+    systemStatusValue = 'Attention';
+    systemStatusColor = '#D97706';
+    systemStatusBg = '#FFFBEB';
+    systemStatusSubtitle = 'AI Vision detector stopped';
+  }
 
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-      gap: '12px'
+      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+      gap: '16px'
     }}>
-      {/* 1. Total Placements */}
-      <div style={{
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
+      {/* 1. OBJECTS TODAY */}
+      <div className="soc-card" style={{
+        padding: '18px 20px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        boxShadow: 'var(--shadow-card)'
+        justifyContent: 'space-between'
       }}>
         <div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Today's Placements
+          <div style={{
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
+            OBJECTS TODAY
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, marginTop: '2px' }}>
-            {totalPlacements}
+          <div style={{
+            fontSize: '1.75rem',
+            fontWeight: 800,
+            color: 'var(--text-primary)',
+            lineHeight: 1.15,
+            marginTop: '4px',
+            fontFamily: 'var(--font-mono)'
+          }}>
+            {totalPlacementsToday}
           </div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: '2px' }}>
-            {authPlacements.length} auth · {unauthPlacements.length} unauth
+          <div style={{
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            marginTop: '4px'
+          }}>
+            placements
           </div>
         </div>
         <div style={{
-          width: '38px',
-          height: '38px',
-          borderRadius: '8px',
-          background: 'rgba(59, 130, 246, 0.12)',
+          width: '42px',
+          height: '42px',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--info-bg)',
+          border: '1px solid var(--info-border)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          border: '1px solid rgba(59, 130, 246, 0.25)'
+          justifyContent: 'center'
         }}>
-          <Layers size={20} color="#60a5fa" />
+          <Package size={20} color="var(--info)" />
         </div>
       </div>
 
-      {/* 2. RFID Compliance Rate */}
-      <div style={{
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
+      {/* 2. AUTHORIZED */}
+      <div className="soc-card" style={{
+        padding: '18px 20px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        boxShadow: 'var(--shadow-card)'
+        justifyContent: 'space-between'
       }}>
         <div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            RFID Compliance Rate
+          <div style={{
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
+            AUTHORIZED
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: complianceRate >= 90 ? '#34d399' : complianceRate >= 70 ? '#fbbf24' : '#f87171', lineHeight: 1.2, marginTop: '2px' }}>
-            {complianceRate}%
+          <div style={{
+            fontSize: '1.75rem',
+            fontWeight: 800,
+            color: 'var(--success)',
+            lineHeight: 1.15,
+            marginTop: '4px',
+            fontFamily: 'var(--font-mono)'
+          }}>
+            {authPlacements.length}
           </div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: '2px' }}>
-            Target: ≥95.0% compliance
+          <div style={{
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            marginTop: '4px'
+          }}>
+            RFID verified
           </div>
         </div>
         <div style={{
-          width: '38px',
-          height: '38px',
-          borderRadius: '8px',
-          background: complianceRate >= 90 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+          width: '42px',
+          height: '42px',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--success-bg)',
+          border: '1px solid var(--success-border)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          border: `1px solid ${complianceRate >= 90 ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`
+          justifyContent: 'center'
         }}>
-          <ShieldCheck size={20} color={complianceRate >= 90 ? '#34d399' : '#fbbf24'} />
+          <ShieldCheck size={20} color="var(--success)" />
         </div>
       </div>
 
-      {/* 3. Security Violations */}
-      <div style={{
-        background: 'var(--bg-card)',
-        border: unauthPlacements.length > 0 ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
+      {/* 3. UNAUTHORIZED */}
+      <div className="soc-card" style={{
+        padding: '18px 20px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        boxShadow: 'var(--shadow-card)'
+        justifyContent: 'space-between'
       }}>
         <div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Violations Today
+          <div style={{
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
+            UNAUTHORIZED
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: unauthPlacements.length > 0 ? '#f87171' : '#f8fafc', lineHeight: 1.2, marginTop: '2px' }}>
+          <div style={{
+            fontSize: '1.75rem',
+            fontWeight: 800,
+            color: unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-primary)',
+            lineHeight: 1.15,
+            marginTop: '4px',
+            fontFamily: 'var(--font-mono)'
+          }}>
             {unauthPlacements.length}
           </div>
-          <div style={{ fontSize: '0.68rem', color: unauthPlacements.length > 0 ? '#fca5a5' : '#94a3b8', marginTop: '2px' }}>
-            {unauthPlacements.length > 0 ? 'Object evidence recorded' : 'Zero violations recorded'}
+          <div style={{
+            fontSize: '0.75rem',
+            color: unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-muted)',
+            marginTop: '4px',
+            fontWeight: unauthPlacements.length > 0 ? 600 : 400
+          }}>
+            action required
           </div>
         </div>
         <div style={{
-          width: '38px',
-          height: '38px',
-          borderRadius: '8px',
-          background: unauthPlacements.length > 0 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(148, 163, 184, 0.1)',
+          width: '42px',
+          height: '42px',
+          borderRadius: 'var(--radius-sm)',
+          background: unauthPlacements.length > 0 ? 'var(--brand-red-bg)' : 'var(--bg-muted)',
+          border: `1px solid ${unauthPlacements.length > 0 ? 'var(--brand-red-border)' : 'var(--border-subtle)'}`,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          border: `1px solid ${unauthPlacements.length > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(148, 163, 184, 0.2)'}`
+          justifyContent: 'center'
         }}>
-          <ShieldAlert size={20} color={unauthPlacements.length > 0 ? '#ef4444' : '#94a3b8'} />
+          <AlertTriangle size={20} color={unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-dim)'} />
         </div>
       </div>
 
-      {/* 4. Avg Correlation Latency */}
-      <div style={{
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
+      {/* 4. SYSTEM STATUS */}
+      <div className="soc-card" style={{
+        padding: '18px 20px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        boxShadow: 'var(--shadow-card)'
+        justifyContent: 'space-between'
       }}>
         <div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Mean Correl. Latency
+          <div style={{
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em'
+          }}>
+            SYSTEM STATUS
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, marginTop: '2px' }}>
-            {avgLatency}s
+          <div style={{
+            fontSize: '1.45rem',
+            fontWeight: 800,
+            color: systemStatusColor,
+            lineHeight: 1.15,
+            marginTop: '6px'
+          }}>
+            {systemStatusValue}
           </div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: '2px' }}>
-            Allowed Window: {systemStatus?.settings?.auth_window_ms ? `${(parseInt(systemStatus.settings.auth_window_ms, 10) / 1000).toFixed(1)}s` : '60.0s'}
+          <div style={{
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            marginTop: '4px',
+            maxWidth: '180px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}>
+            {systemStatusSubtitle}
           </div>
         </div>
         <div style={{
-          width: '38px',
-          height: '38px',
-          borderRadius: '8px',
-          background: 'rgba(168, 85, 247, 0.12)',
+          width: '42px',
+          height: '42px',
+          borderRadius: 'var(--radius-sm)',
+          background: systemStatusBg,
+          border: `1px solid ${systemStatusColor}40`,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          border: '1px solid rgba(168, 85, 247, 0.25)'
+          justifyContent: 'center'
         }}>
-          <Clock size={20} color="#c084fc" />
-        </div>
-      </div>
-
-      {/* 5. Live Floor Inventory */}
-      <div style={{
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)',
-        padding: '12px 16px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        boxShadow: 'var(--shadow-card)'
-      }}>
-        <div>
-          <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Live Floor Inventory
-          </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2, marginTop: '2px' }}>
-            {inventoryCount} <span style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-muted)' }}>items</span>
-          </div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: '2px' }}>
-            Java Memory Tracker sync
-          </div>
-        </div>
-        <div style={{
-          width: '38px',
-          height: '38px',
-          borderRadius: '8px',
-          background: 'rgba(245, 158, 11, 0.12)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          border: '1px solid rgba(245, 158, 11, 0.25)'
-        }}>
-          <Cpu size={20} color="#fbbf24" />
+          <Activity size={20} color={systemStatusColor} />
         </div>
       </div>
     </div>

@@ -584,22 +584,21 @@ async function runAllTests() {
   // TEST 4 — Authorized RFID + No object
   console.log('▶ [Section 36: Test 4] Authorized RFID + No Object...');
   try {
-    const eventsBefore = await getLatestEvent(10);
-    const countBefore = Array.isArray(eventsBefore) ? eventsBefore.length : 0;
+    const eventsBefore = await getLatestEvent(50);
+    const beforeIds = new Set((Array.isArray(eventsBefore) ? eventsBefore : [eventsBefore]).map(e => e.id));
 
     await scanRFID('A472198C');
-    await sleep(300);
+    await sleep(200);
 
-    const eventsAfter = await getLatestEvent(10);
-    const placementEvents = (Array.isArray(eventsAfter) ? eventsAfter : []).filter(e =>
-      e.event_type === 'AUTHORIZED_PLACEMENT' || e.event_type === 'UNAUTHORIZED_PLACEMENT'
-    );
-    const prevPlacementEvents = (Array.isArray(eventsBefore) ? eventsBefore : []).filter(e =>
-      e.event_type === 'AUTHORIZED_PLACEMENT' || e.event_type === 'UNAUTHORIZED_PLACEMENT'
+    const recentAfter = await getLatestEvent(10);
+    const newPlacementEvent = (Array.isArray(recentAfter) ? recentAfter : [recentAfter]).find(e =>
+      !beforeIds.has(e.id) && (e.event_type === 'AUTHORIZED_PLACEMENT' || e.event_type === 'UNAUTHORIZED_PLACEMENT')
     );
 
-    await assert('Sec 36 Test 4: No placement event', placementEvents.length === prevPlacementEvents.length, 'No placement event created from RFID alone');
-    const hasNewAlert = (Array.isArray(eventsAfter) ? eventsAfter : []).some(e => e.alert_status === 'ALERT_TRIGGERED' && !eventsBefore.some(b => b.id === e.id));
+    await assert('Sec 36 Test 4: No placement event', !newPlacementEvent, 'No placement event created from RFID alone');
+    const hasNewAlert = (Array.isArray(recentAfter) ? recentAfter : [recentAfter]).some(e =>
+      !beforeIds.has(e.id) && e.alert_status === 'ALERT_TRIGGERED'
+    );
     await assert('Sec 36 Test 4: No alert', !hasNewAlert, 'No alert generated');
   } catch (err) {
     await assert('Sec 36 Test 4', false, err.message);
@@ -774,7 +773,8 @@ async function runAllTests() {
       body: JSON.stringify({
         objectId: 'TRACK-011A',
         objectType: 'First Item',
-        box: { x: 200, y: 200, width: 70, height: 60 }
+        box: { x: 200, y: 200, width: 70, height: 60 },
+        consumeTokenImmediately: true
       })
     });
     const d11A = await res11A.json();

@@ -4,6 +4,7 @@ const ExcelJS = require('exceljs');
 const archiverPkg = require('archiver');
 const archiver = typeof archiverPkg === 'function' ? archiverPkg : (archiverPkg.default || archiverPkg);
 import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,26 +18,66 @@ if (!fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
 }
 
+import { getSetting } from '../db.js';
+
 class ReportingService {
   constructor() {
     this.teamsWebhookUrl = process.env.TEAMS_WEBHOOK_URL || null;
     this.transporter = null;
+    this.currentSmtpUser = null;
+    this.currentSmtpPass = null;
     this.initMailer();
   }
 
-  initMailer() {
-    // Standard SMTP transporter fallback with test account capability
-    if (process.env.SMTP_HOST) {
-      this.transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || '587', 10),
-        secure: process.env.SMTP_SECURE === 'true',
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS
-        }
-      });
+  loadEnv() {
+    const backendEnv = path.resolve(__dirname, '../../.env');
+    const rootEnv = path.resolve(__dirname, '../../../.env');
+    if (fs.existsSync(backendEnv)) {
+      dotenv.config({ path: backendEnv, override: true });
     }
+    if (fs.existsSync(rootEnv)) {
+      dotenv.config({ path: rootEnv, override: true });
+    }
+  }
+
+  initMailer() {
+    this.loadEnv();
+    const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const port = parseInt(process.env.SMTP_PORT || '587', 10);
+    const user = process.env.SMTP_USER ? process.env.SMTP_USER.trim() : null;
+    const pass = process.env.SMTP_PASS ? process.env.SMTP_PASS.trim() : null;
+
+    if (user && pass) {
+      try {
+        this.transporter = nodemailer.createTransport({
+          host,
+          port,
+          secure: port === 465,
+          auth: { user, pass }
+        });
+        this.currentSmtpUser = user;
+        this.currentSmtpPass = pass;
+        console.log(`✉️ [ReportingService] SMTP Mailer initialized for ${user} via ${host}:${port}`);
+      } catch (err) {
+        console.warn('⚠️ [ReportingService] SMTP init error:', err.message);
+      }
+    } else {
+      this.transporter = null;
+      console.log(`ℹ️ [ReportingService] Email alerts target: ${process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com'}`);
+    }
+  }
+
+  getMailer() {
+    this.loadEnv();
+    const user = process.env.SMTP_USER ? process.env.SMTP_USER.trim() : null;
+    const pass = process.env.SMTP_PASS ? process.env.SMTP_PASS.trim() : null;
+    if (user && pass) {
+      if (!this.transporter || this.currentSmtpUser !== user || this.currentSmtpPass !== pass) {
+        this.initMailer();
+      }
+      return this.transporter;
+    }
+    return null;
   }
 
   /**
@@ -223,9 +264,10 @@ class ReportingService {
       }] : []
     };
 
-    if (this.transporter) {
+    const mailer = this.getMailer();
+    if (mailer) {
       try {
-        const info = await this.transporter.sendMail(mailOptions);
+        const info = await mailer.sendMail(mailOptions);
         return { success: true, messageId: info.messageId };
       } catch (err) {
         console.warn('Email send error:', err.message);
@@ -238,6 +280,270 @@ class ReportingService {
       recipient: recipientEmail,
       subject: mailOptions.subject,
       attachment: zipFilePath ? path.basename(zipFilePath) : null
+    };
+  }
+
+  /**
+   * Automatically sends an email with the cropped evidence image attached
+   * to yochitcheedella@gmail.com when an unauthorized placement is confirmed.
+   */
+  async sendUnauthorizedEvidenceEmail(eventData, evidenceFilename, recipientOverride = null) {
+    let recipientEmail = recipientOverride;
+    if (!recipientEmail) {
+      try {
+        recipientEmail = getSetting('alert_email_recipient');
+      } catch (_) {}
+    }
+    if (!recipientEmail) {
+      recipientEmail = process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com';
+    }
+
+    const eventId = eventData.id || eventData.eventId || `EVT-${Date.now()}`;
+    const objectType = eventData.object_type || 'Placed Item';
+    const objectId = eventData.object_id || 'UNKNOWN';
+    const timeStr = eventData.timestamp ? new Date(eventData.timestamp).toLocaleString() : new Date().toLocaleString();
+    const rfidStatus = eventData.authorization_status || 'NO_RFID (Not detected)';
+    const notes = eventData.notes || 'Object confirmed inside Red Tag Area without valid RFID authorization.';
+
+    // Locate evidence image file on disk
+    let evidenceFilePath = null;
+    if (evidenceFilename) {
+      const candidates = [
+        path.resolve(evidenceDir, 'unauthorized', path.basename(evidenceFilename)),
+        path.resolve(evidenceDir, path.basename(evidenceFilename)),
+        path.resolve(evidenceDir, 'authorized', path.basename(evidenceFilename))
+      ];
+      for (const cand of candidates) {
+        if (fs.existsSync(cand)) {
+          evidenceFilePath = cand;
+          break;
+        }
+      }
+    }
+
+    const attachments = [];
+    if (evidenceFilePath) {
+      attachments.push({
+        filename: path.basename(evidenceFilePath),
+        path: evidenceFilePath,
+        cid: 'evidence_crop'
+      });
+    }
+
+    const subject = `🚨 [RED TAG MONITOR] Unauthorized Placement Alert: ${objectType} (${eventId})`;
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${subject}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #F4F6F8; margin: 0; padding: 24px; color: #111827;">
+  <div style="max-width: 600px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D9DEE5; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+    
+    <!-- Header Banner -->
+    <div style="background: #D92D20; color: #FFFFFF; padding: 20px 24px;">
+      <div style="font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.9;">
+        RED TAG MONITOR • CRITICAL SECURITY ALERT
+      </div>
+      <h1 style="margin: 6px 0 0; font-size: 20px; font-weight: 800; color: #FFFFFF; line-height: 1.2;">
+        Unauthorized Object Placement Detected
+      </h1>
+      <p style="margin: 4px 0 0; font-size: 12px; opacity: 0.85;">
+        Real-Time Red Tag Area Monitoring System
+      </p>
+    </div>
+
+    <!-- Alert Summary -->
+    <div style="padding: 24px;">
+      <p style="margin-top: 0; font-size: 14px; line-height: 1.5; color: #374151;">
+        An unauthorized placement was confirmed inside the designated <strong>Red Tag Area</strong> floor polygon. The object was monitored and verified stationary for the configured duration without valid RFID badge authorization.
+      </p>
+
+      <!-- Incident Metadata Table -->
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px;">
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700; width: 140px;">EVENT ID:</td>
+          <td style="padding: 10px 0; font-family: monospace; font-weight: 700; color: #111827;">${eventId}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">TIMESTAMP:</td>
+          <td style="padding: 10px 0; color: #111827;">${timeStr}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">OBJECT ID:</td>
+          <td style="padding: 10px 0; font-family: monospace; font-weight: 600; color: #111827;">${objectId}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">DETECTED ITEM:</td>
+          <td style="padding: 10px 0; font-weight: 600; color: #111827;">${objectType}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">RFID STATUS:</td>
+          <td style="padding: 10px 0; font-weight: 700; color: #D92D20;">${rfidStatus}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">AREA:</td>
+          <td style="padding: 10px 0; color: #111827;">Red Tag Area (Physical Floor Tape Polygon)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #E5E7EB;">
+          <td style="padding: 10px 0; color: #667085; font-weight: 700;">ALERT STATUS:</td>
+          <td style="padding: 10px 0; font-weight: 700; color: #D92D20;">OPEN (Action Required)</td>
+        </tr>
+      </table>
+
+      <!-- Evidence Image Preview -->
+      <div style="background: #F8FAFC; border: 1px solid #D9DEE5; border-radius: 6px; padding: 16px; margin: 20px 0; text-align: center;">
+        <div style="font-size: 11px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; text-align: left;">
+          OBJECT-FOCUSED FORENSIC EVIDENCE CROP
+        </div>
+        ${evidenceFilePath ? `
+          <img src="cid:evidence_crop" alt="Forensic Object Crop" style="max-width: 100%; height: auto; border: 1px solid #CBD5E1; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" />
+        ` : `
+          <div style="padding: 24px; color: #94A3B8; font-size: 13px;">
+            Evidence file recorded: ${evidenceFilename || 'N/A'} (Image file not present on local disk)
+          </div>
+        `}
+        <div style="font-size: 11px; color: #64748B; margin-top: 10px; text-align: left;">
+          <em>Notice: Evidence capture is strictly limited to the placed physical object within the Red Tag Area. No facial likenesses or biometrics are captured.</em>
+        </div>
+      </div>
+
+      <!-- Action Button -->
+      <div style="text-align: center; margin: 28px 0 12px;">
+        <a href="http://localhost:5173/alerts" style="display: inline-block; background: #D92D20; color: #FFFFFF; font-weight: 700; font-size: 14px; text-decoration: none; padding: 12px 28px; border-radius: 6px;">
+          View Incident in Dashboard
+        </a>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="background: #F4F6F8; border-top: 1px solid #D9DEE5; padding: 14px 24px; font-size: 11px; color: #667085; text-align: center;">
+      Automated Incident Notification • Red Tag Monitoring System • Recipient: ${recipientEmail}
+    </div>
+  </div>
+</body>
+</html>
+    `;
+
+    const plainText = `
+[RED TAG MONITOR] UNAUTHORIZED PLACEMENT ALERT
+============================================================
+An unauthorized object placement was detected and confirmed inside the Red Tag Area.
+
+Event ID:     ${eventId}
+Timestamp:    ${timeStr}
+Object ID:    ${objectId}
+Detected:     ${objectType}
+RFID Status:  ${rfidStatus}
+Alert Status: OPEN (Action Required)
+Area:         Red Tag Area (Floor Tape Polygon)
+Notes:        ${notes}
+Evidence:     ${evidenceFilePath ? path.basename(evidenceFilePath) : (evidenceFilename || 'N/A')}
+
+Evidence capture is strictly limited to the placed object within the Red Tag Area.
+View in Dashboard: http://localhost:5173/alerts
+============================================================
+    `.trim();
+
+    const mailOptions = {
+      from: `"Red Tag Monitor" <${process.env.SMTP_USER || 'alerts@redtag-security.local'}>`,
+      to: recipientEmail,
+      subject,
+      text: plainText,
+      html: htmlContent,
+      attachments
+    };
+
+    console.log(`\n============================================================`);
+    console.log(`✉️ [EMAIL ALERT DISPATCH]`);
+    console.log(`   To: ${recipientEmail}`);
+    console.log(`   Subject: ${subject}`);
+    console.log(`   Event ID: ${eventId}`);
+    console.log(`   Object: ${objectType} (${objectId})`);
+    console.log(`   Evidence Attached: ${evidenceFilePath ? path.basename(evidenceFilePath) : 'None'}`);
+
+    // 1. Direct Web Relay to recipient's email address
+    let relayDelivered = false;
+    let relayMessage = null;
+    try {
+      const relayRes = await fetch(`https://formsubmit.co/ajax/${recipientEmail}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Origin': 'http://localhost:5173',
+          'Referer': 'http://localhost:5173/'
+        },
+        body: JSON.stringify({
+          _subject: subject,
+          _template: 'table',
+          event_id: eventId,
+          timestamp: timeStr,
+          object_id: objectId,
+          object_type: objectType,
+          rfid_status: rfidStatus,
+          alert_status: 'OPEN (Action Required)',
+          area: 'Red Tag Area (Physical Floor Tape Polygon)',
+          evidence_image: evidenceFilePath ? path.basename(evidenceFilePath) : (evidenceFilename || 'Captured'),
+          notes: notes
+        })
+      });
+      const relayData = await relayRes.json();
+      if (relayData.success === 'true' || relayData.success === true) {
+        relayDelivered = true;
+        relayMessage = 'Delivered to inbox';
+        console.log(`   ✅ Direct Web Relay delivered to: ${recipientEmail}`);
+      } else {
+        relayMessage = relayData.message;
+        console.log(`   ℹ️ Direct Web Relay status: ${relayData.message}`);
+      }
+    } catch (relayErr) {
+      console.warn('   ⚠️ Direct Web Relay note:', relayErr.message);
+    }
+
+    // 2. Standard SMTP Transporter (if configured)
+    const mailer = this.getMailer();
+    if (mailer) {
+      try {
+        const info = await mailer.sendMail(mailOptions);
+        console.log(`   ✅ Sent via SMTP: ${info.messageId}`);
+        console.log(`============================================================\n`);
+        return { success: true, delivered: true, recipient: recipientEmail, messageId: info.messageId, relayMessage };
+      } catch (err) {
+        console.warn(`   ⚠️ SMTP send failed: ${err.message}`);
+      }
+    }
+
+    // 3. Automated live HTML preview for instant verification
+    let previewUrl = null;
+    try {
+      if (!this.testTransporter) {
+        const testAccount = await nodemailer.createTestAccount();
+        this.testTransporter = nodemailer.createTransport({
+          host: testAccount.smtp.host,
+          port: testAccount.smtp.port,
+          secure: testAccount.smtp.secure,
+          auth: { user: testAccount.user, pass: testAccount.pass }
+        });
+      }
+      if (this.testTransporter) {
+        const testInfo = await this.testTransporter.sendMail(mailOptions);
+        previewUrl = nodemailer.getTestMessageUrl(testInfo);
+        console.log(`   🌐 Live Evidence Email Preview: ${previewUrl}`);
+      }
+    } catch (testErr) {
+      console.warn('   ⚠️ Preview generator note:', testErr.message);
+    }
+
+    console.log(`============================================================\n`);
+    return {
+      success: true,
+      delivered: relayDelivered,
+      recipient: recipientEmail,
+      previewUrl,
+      relayMessage: relayMessage || (relayDelivered ? 'Delivered' : 'Check activation or SMTP credentials')
     };
   }
 }

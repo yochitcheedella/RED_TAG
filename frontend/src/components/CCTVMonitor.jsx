@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Camera, Crosshair, ShieldCheck, ShieldAlert, Footprints, Clock, RotateCcw, Check, PenTool, Video, RefreshCw, AlertCircle } from 'lucide-react';
+import { Camera, Crosshair, ShieldCheck, ShieldAlert, Footprints, Clock, RotateCcw, Check, PenTool, Video, RefreshCw, AlertCircle, Wrench, ChevronDown, Sliders } from 'lucide-react';
 import * as tf from '@tensorflow/tfjs';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import { sounds } from '../utils/audio';
@@ -10,7 +10,9 @@ export default function CCTVMonitor({
   activeToken,
   onSaveROI,
   polygonVertices: externalPolygon,
-  onPolygonChange
+  onPolygonChange,
+  onCameraStateChange,
+  onActivityChange
 }) {
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -21,6 +23,10 @@ export default function CCTVMonitor({
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [fps, setFps] = useState(0);
+
+  useEffect(() => {
+    onCameraStateChange?.(cameraActive);
+  }, [cameraActive, onCameraStateChange]);
 
   // Red Tag Area Polygon Vertices (Manually configured by the user)
   const [polygonVertices, setPolygonVertices] = useState(externalPolygon || [
@@ -35,6 +41,7 @@ export default function CCTVMonitor({
   const [drawPoints, setDrawPoints] = useState([]);
   const [draggedIdx, setDraggedIdx] = useState(null);
   const [polygonError, setPolygonError] = useState(null);
+  const [showOperatorTools, setShowOperatorTools] = useState(false);
 
   // Keep in sync with external polygon unless currently in active calibration
   useEffect(() => {
@@ -51,6 +58,8 @@ export default function CCTVMonitor({
   // Spatial Proximity Trackers & Execution References
   const trackersRef = useRef([]);
   const nextTrackerId = useRef(1);
+  // Persistent spatial memory of confirmed authorized objects inside the Red Tag Area
+  const authorizedAnchorsRef = useRef(new Map());
   const isDetectingRef = useRef(false);
   const lastDetectTimeRef = useRef(0);
   const modelRef = useRef(null);
@@ -64,6 +73,7 @@ export default function CCTVMonitor({
   const roiCanvasRef = useRef(null);
   const floorBaselineRef = useRef(null);
   const baselineFramesCount = useRef(0);
+  const detectedPersonsRef = useRef([]);
 
   useEffect(() => { modelRef.current = model; }, [model]);
   useEffect(() => { activeTokenRef.current = activeToken; }, [activeToken]);
@@ -82,13 +92,33 @@ export default function CCTVMonitor({
   useEffect(() => {
     const handleClear = () => {
       trackersRef.current = [];
+      authorizedAnchorsRef.current.clear();
       setManualObjects([]);
       floorBaselineRef.current = null;
       baselineFramesCount.current = 0;
       onUnauthorizedAlertRef.current?.(null);
     };
+
+    const handleObjectRemoved = (e) => {
+      const removedId = e.detail?.objectId;
+      if (removedId && removedId !== 'ALL') {
+        trackersRef.current = trackersRef.current.filter(t => t.objectId !== removedId);
+        authorizedAnchorsRef.current.delete(removedId);
+      } else {
+        trackersRef.current = [];
+        authorizedAnchorsRef.current.clear();
+      }
+      if (trackersRef.current.length === 0) {
+        onUnauthorizedAlertRef.current?.(null);
+      }
+    };
+
     window.addEventListener('redtag:clear_objects', handleClear);
-    return () => window.removeEventListener('redtag:clear_objects', handleClear);
+    window.addEventListener('redtag:object_removed', handleObjectRemoved);
+    return () => {
+      window.removeEventListener('redtag:clear_objects', handleClear);
+      window.removeEventListener('redtag:object_removed', handleObjectRemoved);
+    };
   }, []);
 
   // Load configured polygon from backend
@@ -271,10 +301,51 @@ export default function CCTVMonitor({
     return inside;
   }, [polygonVertices]);
 
+  // Comprehensive 3D floor object placement test against 2D floor polygon
+  // Supports tall upright objects (chairs, boxes, crates, equipment) whose 3D height projects upwards,
+  // testing multiple floor contact points across the base, inset footprint, leg contact points, and lower third.
+  const checkCandidateInPolygon = useCallback((cand, poly = polygonVertices) => {
+    if (!poly || poly.length < 3) {
+      const cx = cand.centerX ?? Math.round(cand.x + (cand.width || 0) / 2);
+      const bottomY = Math.round(cand.y + (cand.height || 0));
+      return { inside: false, footprint: { x: cx, y: bottomY } };
+    }
+    const cx = cand.centerX ?? Math.round(cand.x + cand.width / 2);
+    const cy = cand.centerY ?? Math.round(cand.y + cand.height / 2);
+    const bottomY = Math.round(cand.y + cand.height);
+    const h = cand.height || 40;
+    const w = cand.width || 40;
+
+    // Contact test points on the floor / base of the 3D object
+    const testPoints = [
+      { x: cx, y: bottomY },                                                                     // 1. Exact bottom-center
+      { x: cx, y: bottomY - Math.min(25, Math.max(5, Math.round(h * 0.08))) },                   // 2. Inset base (accounts for shadows/perspective tilt)
+      { x: Math.round(cand.x + w * 0.25), y: bottomY - Math.min(20, Math.max(5, Math.round(h * 0.08))) }, // 3. Base left (left leg)
+      { x: Math.round(cand.x + w * 0.75), y: bottomY - Math.min(20, Math.max(5, Math.round(h * 0.08))) }, // 4. Base right (right leg)
+      { x: cx, y: bottomY - Math.min(50, Math.max(10, Math.round(h * 0.20))) },                  // 5. Lower third base
+      { x: cx, y: cy }                                                                           // 6. Object centroid
+    ];
+
+    for (const pt of testPoints) {
+      if (isPointInPolygon(pt, poly)) {
+        return {
+          inside: true,
+          footprint: { x: pt.x, y: Math.min(bottomY, pt.y + 10) }
+        };
+      }
+    }
+
+    return {
+      inside: false,
+      footprint: { x: cx, y: bottomY }
+    };
+  }, [isPointInPolygon, polygonVertices]);
+
   // Robust Multi-Object Floor Segmenter:
   // Uses an empty floor background baseline + local edge energy verification
   // to detect ONLY real physical objects placed on the floor, strictly rejecting empty space, carpet seams, and air.
-  const detectFloorObjects = useCallback((roiCtx, roiCanvas, roiMinX, roiMinY, roiW, roiH, activePoly) => {
+  // ZERO-HUMAN PROTECTION: Explicitly masks out any blocks belonging to detected people/workers.
+  const detectFloorObjects = useCallback((roiCtx, roiCanvas, roiMinX, roiMinY, roiW, roiH, activePoly, detectedPersons = []) => {
     const rw = roiCanvas.width;
     const rh = roiCanvas.height;
     if (rw < 30 || rh < 30) return [];
@@ -293,6 +364,21 @@ export default function CCTVMonitor({
         for (let c = 0; c < cols; c++) {
           const canvasX = roiMinX + (c * blockSize / rw) * roiW;
           const canvasY = roiMinY + (r * blockSize / rh) * roiH;
+
+          // ZERO-HUMAN FILTER: If block is inside ANY detected person, exclude it from floor detection!
+          let isHumanBlock = false;
+          for (const p of detectedPersons) {
+            if (canvasX >= p.x && canvasX <= p.x + p.width &&
+                canvasY >= p.y && canvasY <= p.y + p.height) {
+              isHumanBlock = true;
+              break;
+            }
+          }
+          if (isHumanBlock) {
+            blockGrid[r][c] = { avgL: 128, r: 128, g: 128, b: 128, inPoly: false, isHuman: true };
+            continue;
+          }
+
           const inPoly = isPointInPolygon({ x: canvasX, y: canvasY }, activePoly);
           if (inPoly) inPolyCount++;
 
@@ -437,7 +523,7 @@ export default function CCTVMonitor({
 
           // Minimum physical dimensions: at least 12px wide, 12px tall
           if (candW < 12 || candH < 12) continue;
-          if (candW > roiW * 0.70 || candH > roiH * 0.70) continue;
+          if (candW > roiW * 0.96 && candH > roiH * 0.96) continue;
 
           // Physical Edge Gradient Check:
           // Check edge contrast around cluster perimeter to ensure this is a solid physical 3D object
@@ -463,7 +549,22 @@ export default function CCTVMonitor({
           const candBaseY = Math.round(candY + candH);
           const basePoint = { x: candCenterX, y: candBaseY };
 
-          if (!isPointInPolygon(basePoint, activePoly)) continue;
+          // ZERO-HUMAN FILTER: Reject if cluster centroid or base overlaps any detected human
+          let isClusterOnHuman = false;
+          for (const p of detectedPersons) {
+            if (candCenterX >= p.x && candCenterX <= p.x + p.width &&
+                candBaseY >= p.y && candBaseY <= p.y + p.height) {
+              isClusterOnHuman = true;
+              break;
+            }
+          }
+          if (isClusterOnHuman) continue;
+
+          // Reject clusters reaching into upper camera quadrant (y < 120 and tall) — that is a person/pedestrian, not a floor object
+          if (candY < 120 && candH > 140) continue;
+
+          const polyTest = checkCandidateInPolygon({ x: candX, y: candY, width: candW, height: candH, centerX: candCenterX, centerY: Math.round(candY + candH / 2) }, activePoly);
+          if (!polyTest.inside) continue;
 
           detectedObjects.push({
             class: 'Placed Object',
@@ -484,7 +585,7 @@ export default function CCTVMonitor({
     } catch (err) {
       return [];
     }
-  }, [isPointInPolygon]);
+  }, [isPointInPolygon, checkCandidateInPolygon]);
 
   // Client-side Section 76 polygon validation (mirrors server logic)
   const validatePolygonClient = (vertices) => {
@@ -573,20 +674,50 @@ export default function CCTVMonitor({
   };
 
   // Section 8 & 30: Strictly crop ONLY the target object's bounding box + 15px padding
-  // NEVER capture full frame, NEVER capture entire ROI, NEVER capture Object A + B
+  // ZERO-HUMAN PRIVACY STANDARD: Never capture human faces or bodies in evidence frames.
   const cropTargetObjectOnly = (video, tracker, padding = 15) => {
     try {
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
+
+      // If tracker is mistakenly labelled as a human/pedestrian, reject immediately
+      const labelCheck = (tracker.bestClass || '').toLowerCase();
+      if (['person', 'human', 'pedestrian', 'worker', 'face', 'body'].includes(labelCheck)) {
+        return null;
+      }
+
       const vw = video.videoWidth;
       const vh = video.videoHeight;
       const sx = vw / 640;
       const sy = vh / 480;
 
       const pad = padding;
-      const cropX = Math.max(0, tracker.x - pad);
-      const cropY = Math.max(0, tracker.y - pad);
-      const cropW = Math.min(640 - cropX, Math.max(tracker.width + pad * 2, 40));
-      const cropH = Math.min(480 - cropY, Math.max(tracker.height + pad * 2, 40));
+      let cropX = Math.max(0, tracker.x - pad);
+      let cropY = Math.max(0, tracker.y - pad);
+      let cropW = Math.min(640 - cropX, Math.max(tracker.width + pad * 2, 40));
+      let cropH = Math.min(480 - cropY, Math.max(tracker.height + pad * 2, 40));
+
+      // Height clamping: Placed floor objects are never taller than 200px.
+      // If box is too tall, clamp top boundary downwards towards the floor
+      if (cropH > 200) {
+        const excess = cropH - 200;
+        cropY += excess;
+        cropH = 200;
+      }
+
+      // Check against all detected persons: if a person's upper body / face is above or near the object,
+      // clamp cropY so it never includes the person's face/torso
+      const persons = detectedPersonsRef.current || [];
+      for (const p of persons) {
+        // Face/head zone is top 45% of human bounding box
+        const faceBottomY = p.y + p.height * 0.45;
+        if (cropY < faceBottomY && (cropX + cropW >= p.x) && (cropX <= p.x + p.width)) {
+          const adjustedY = Math.min(p.y + p.height * 0.50, tracker.y);
+          if (adjustedY > cropY) {
+            cropH = Math.max(40, cropH - (adjustedY - cropY));
+            cropY = adjustedY;
+          }
+        }
+      }
 
       const srcX = Math.max(0, cropX * sx);
       const srcY = Math.max(0, cropY * sy);
@@ -601,12 +732,36 @@ export default function CCTVMonitor({
       // Draw ONLY the target object bounding box crop
       ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, canvas.width, canvas.height);
 
+      // ZERO-FACE PRIVACY PROTECTION: Mask any accidental overlap with human head/torso pixels
+      for (const p of persons) {
+        const faceBottomY = p.y + p.height * 0.45;
+        const iX1 = Math.max(cropX, p.x);
+        const iY1 = Math.max(cropY, p.y);
+        const iX2 = Math.min(cropX + cropW, p.x + p.width);
+        const iY2 = Math.min(cropY + cropH, faceBottomY);
+
+        if (iX2 > iX1 && iY2 > iY1) {
+          const mX = Math.round(iX1 - cropX);
+          const mY = Math.round(iY1 - cropY);
+          const mW = Math.round(iX2 - iX1);
+          const mH = Math.round(iY2 - iY1);
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(mX, mY, mW, mH);
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(mX, mY, mW, mH);
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '700 8.5px JetBrains Mono, monospace';
+          ctx.fillText('PRIVACY MASK (HUMAN EXCLUDED)', mX + 4, mY + Math.min(14, mH / 2));
+        }
+      }
+
       // Subtle forensic label at bottom of crop
       ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
       ctx.fillRect(0, canvas.height - 18, canvas.width, 18);
       ctx.fillStyle = tracker.authorized ? '#34d399' : '#f87171';
       ctx.font = '700 9px JetBrains Mono, monospace';
-      ctx.fillText(`● ${tracker.objectId || 'TRACK'} | ${tracker.bestClass.toUpperCase()}`, 6, canvas.height - 6);
+      ctx.fillText(`● ${tracker.objectId || 'TRACK'} | ${tracker.bestClass.toUpperCase()} (OBJECT EVIDENCE)`, 6, canvas.height - 6);
 
       const sharpness = computeSharpness(ctx, canvas.width, canvas.height);
       return {
@@ -726,60 +881,129 @@ export default function CCTVMonitor({
       // AI & Optical Placement Detection
       const rawCandidates = [];
 
-      // 1. Neural Network Detection on Full Video (full perspective context)
+      // 1. Detect all Persons & Pedestrians across the CCTV frame (COCO-SSD)
+      // ZERO-HUMAN REQUIREMENT: Humans, workers, pedestrians, and their faces are NEVER tracking targets!
+      const detectedPersons = [];
+      let fullPredictions = [];
       try {
-        const fullPredictions = (await aiModel.detect(video, 20, 0.22)) || [];
+        fullPredictions = (await aiModel.detect(video, 20, 0.20)) || [];
         for (const fp of fullPredictions) {
-          if (ignoredClasses.has(fp.class)) continue;
-          const [vx, vy, vwBox, vhBox] = fp.bbox;
-          const candX = Math.round(offsetX + vx * scale);
-          const candY = Math.round(offsetY + vy * scale);
-          const candW = Math.round(vwBox * scale);
-          const candH = Math.round(vhBox * scale);
-
-          // Reject candidates that span more than 65% of the Red Tag area (hallucinations covering entire floor)
-          if (candW > roiW * 0.65 || candH > roiH * 0.65) continue;
-
-          const candCenterX = Math.round(candX + candW / 2);
-          const candBaseY = Math.round(candY + candH);
-          const basePoint = { x: candCenterX, y: candBaseY };
-
-          if (isPointInPolygon(basePoint, activePoly)) {
-            rawCandidates.push({
-              class: fp.class,
+          if (fp.class === 'person' && fp.score >= 0.20) {
+            const [vx, vy, vwBox, vhBox] = fp.bbox;
+            detectedPersons.push({
+              class: 'person',
               score: fp.score,
-              x: candX,
-              y: candY,
-              width: candW,
-              height: candH,
-              centerX: candCenterX,
-              centerY: Math.round(candY + candH / 2),
-              basePoint,
-              rawBox: null
+              x: Math.round(offsetX + vx * scale),
+              y: Math.round(offsetY + vy * scale),
+              width: Math.round(vwBox * scale),
+              height: Math.round(vhBox * scale)
             });
           }
         }
       } catch (e) {}
+      detectedPersonsRef.current = detectedPersons;
 
-      // 2. Neural Network Detection on Cropped Red Tag ROI Canvas
+      // Helper: Check if an object is being carried, held, or worn by a human (not placed on floor)
+      const isCarriedOrAttachedToPerson = (cx, cy, cw, ch) => {
+        const cCenterX = cx + cw / 2;
+        const cCenterY = cy + ch / 2;
+        const cBaseY = cy + ch;
+        for (const p of detectedPersons) {
+          // If candidate is in person's upper 80% body (chest, hands, shoulders), it is carried/worn
+          const personLowerTorsoY = p.y + p.height * 0.80;
+          if (cCenterY >= p.y && cCenterY <= personLowerTorsoY &&
+              cCenterX >= p.x - 20 && cCenterX <= p.x + p.width + 20) {
+            return true;
+          }
+          // Spatial intersection with person box
+          const xA = Math.max(cx, p.x);
+          const yA = Math.max(cy, p.y);
+          const xB = Math.min(cx + cw, p.x + p.width);
+          const yB = Math.min(cy + ch, p.y + p.height);
+          const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+          const candArea = cw * ch;
+          if (candArea > 0 && (interArea / candArea) > 0.40 && cBaseY < (p.y + p.height - 15)) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // 2. Neural Network Detection on Full Video (full perspective context)
+      for (const fp of fullPredictions) {
+        if (ignoredClasses.has(fp.class) || fp.class === 'person') continue;
+        const [vx, vy, vwBox, vhBox] = fp.bbox;
+        const candX = Math.round(offsetX + vx * scale);
+        const candY = Math.round(offsetY + vy * scale);
+        const candW = Math.round(vwBox * scale);
+        const candH = Math.round(vhBox * scale);
+
+        // Reject candidates that cover virtually the entire CCTV frame (full-screen hallucinations/lighting glitches)
+        if (candW > renderW * 0.96 && candH > renderH * 0.96) continue;
+        // Ignore objects being carried or worn by people
+        if (isCarriedOrAttachedToPerson(candX, candY, candW, candH)) continue;
+
+        const candCenterX = Math.round(candX + candW / 2);
+        const candCenterY = Math.round(candY + candH / 2);
+
+        // Comprehensive 3D placement containment test against Red Tag Area floor polygon
+        // (Supports upright objects like chairs, crates, barrels whose 3D height projects upwards)
+        const polyTest = checkCandidateInPolygon({
+          x: candX,
+          y: candY,
+          width: candW,
+          height: candH,
+          centerX: candCenterX,
+          centerY: candCenterY
+        }, activePoly);
+
+        if (polyTest.inside) {
+          rawCandidates.push({
+            class: fp.class,
+            score: fp.score,
+            x: candX,
+            y: candY,
+            width: candW,
+            height: candH,
+            centerX: candCenterX,
+            centerY: candCenterY,
+            basePoint: polyTest.footprint,
+            rawBox: null
+          });
+        }
+      }
+
+      // 3. Neural Network Detection on Cropped Red Tag ROI Canvas
       try {
         const roiPredictions = (await aiModel.detect(roiCanvas, 10, 0.22)) || [];
         for (const rp of roiPredictions) {
-          if (ignoredClasses.has(rp.class)) continue;
+          if (ignoredClasses.has(rp.class) || rp.class === 'person') continue;
           const [cx, cy, cwBox, chBox] = rp.bbox;
           const candW = Math.round((cwBox / roiCanvas.width) * roiW);
           const candH = Math.round((chBox / roiCanvas.height) * roiH);
 
-          // Reject boxes covering more than 65% of the Red Tag Area
-          if (candW > roiW * 0.65 || candH > roiH * 0.65) continue;
+          // Reject boxes covering virtually the entire cropped ROI canvas
+          if (cwBox >= roiCanvas.width * 0.96 && chBox >= roiCanvas.height * 0.96) continue;
 
           const candX = Math.round(roiMinX + (cx / roiCanvas.width) * roiW);
           const candY = Math.round(roiMinY + (cy / roiCanvas.height) * roiH);
-          const candCenterX = Math.round(candX + candW / 2);
-          const candBaseY = Math.round(candY + candH);
-          const basePoint = { x: candCenterX, y: candBaseY };
 
-          if (isPointInPolygon(basePoint, activePoly)) {
+          // Ignore objects being carried or worn by people
+          if (isCarriedOrAttachedToPerson(candX, candY, candW, candH)) continue;
+
+          const candCenterX = Math.round(candX + candW / 2);
+          const candCenterY = Math.round(candY + candH / 2);
+
+          const polyTest = checkCandidateInPolygon({
+            x: candX,
+            y: candY,
+            width: candW,
+            height: candH,
+            centerX: candCenterX,
+            centerY: candCenterY
+          }, activePoly);
+
+          if (polyTest.inside) {
             rawCandidates.push({
               class: rp.class,
               score: rp.score,
@@ -788,18 +1012,20 @@ export default function CCTVMonitor({
               width: candW,
               height: candH,
               centerX: candCenterX,
-              centerY: Math.round(candY + candH / 2),
-              basePoint,
+              centerY: candCenterY,
+              basePoint: polyTest.footprint,
               rawBox: null
             });
           }
         }
       } catch (e) {}
 
-      // 3. Physical Floor Object Segmenter (Reliably detects multiple boxes, blocks, tools, and industrial parts)
-      const floorObjs = detectFloorObjects(roiCtx, roiCanvas, roiMinX, roiMinY, roiW, roiH, activePoly);
+      // 4. Physical Floor Object Segmenter (Reliably detects multiple boxes, blocks, tools, and industrial parts)
+      const floorObjs = detectFloorObjects(roiCtx, roiCanvas, roiMinX, roiMinY, roiW, roiH, activePoly, detectedPersons);
       for (const floorObj of floorObjs) {
-        rawCandidates.push(floorObj);
+        if (!isCarriedOrAttachedToPerson(floorObj.x, floorObj.y, floorObj.width, floorObj.height)) {
+          rawCandidates.push(floorObj);
+        }
       }
 
       // Include manual objects if placed inside polygon
@@ -945,11 +1171,34 @@ export default function CCTVMonitor({
             }
           }
         } else {
+          // Check if this candidate is an already-authorized physical object that was temporarily occluded
+          let matchedAnchor = null;
+          for (const [anchorId, anchor] of authorizedAnchorsRef.current.entries()) {
+            const anchorCX = anchor.centerX || (anchor.x + anchor.width / 2);
+            const anchorCY = anchor.centerY || (anchor.y + anchor.height / 2);
+            const d = Math.hypot(cand.centerX - anchorCX, cand.centerY - anchorCY);
+            const xA = Math.max(cand.x, anchor.x);
+            const yA = Math.max(cand.y, anchor.y);
+            const xB = Math.min(cand.x + cand.width, anchor.x + anchor.width);
+            const yB = Math.min(cand.y + cand.height, anchor.y + anchor.height);
+            const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+            const boxAArea = cand.width * cand.height;
+            const boxBArea = anchor.width * anchor.height;
+            const unionArea = boxAArea + boxBArea - interArea;
+            const iou = unionArea > 0 ? interArea / unionArea : 0;
+
+            if (iou >= 0.20 || d < 80) {
+              matchedAnchor = anchor;
+              break;
+            }
+          }
+
           // New object entered scene (Section 4 & 7: Assign TRACK-xxx ID)
           const newId = nextTrackerId.current++;
-          const formattedId = `TRACK-${String(newId).padStart(3, '0')}`;
+          const formattedId = matchedAnchor ? matchedAnchor.objectId : `TRACK-${String(newId).padStart(3, '0')}`;
           matchedTrackerIds.add(newId);
 
+          const isAlreadyAuth = !!matchedAnchor;
           const newTracker = {
             id: newId,
             objectId: formattedId,
@@ -959,20 +1208,31 @@ export default function CCTVMonitor({
             height: cand.height,
             centerX: cand.centerX,
             centerY: cand.centerY,
-            bestClass: cand.class,
+            bestClass: matchedAnchor?.bestClass || cand.class,
             bestScore: cand.score,
             currentClass: cand.class,
             currentScore: cand.score,
             firstSeen: now,
             stationaryStart: now,
             lastSeen: now,
-            debounced: false,
+            debounced: isAlreadyAuth,
+            authorized: isAlreadyAuth,
             isMoving: false,
             rawBox: cand.rawBox,
             candidateFrames: [],
             lastCandidateTime: 0,
-            state: 'PLACEMENT_CONFIRMING'
+            state: isAlreadyAuth ? 'PRESENT' : 'PLACEMENT_CONFIRMING'
           };
+
+          if (isAlreadyAuth) {
+            console.log(`🛡️ [TRACKING] Preserved AUTHORIZED status for ${formattedId} at [${cand.centerX}, ${cand.centerY}]`);
+            matchedAnchor.x = cand.x;
+            matchedAnchor.y = cand.y;
+            matchedAnchor.width = cand.width;
+            matchedAnchor.height = cand.height;
+            matchedAnchor.centerX = cand.centerX;
+            matchedAnchor.centerY = cand.centerY;
+          }
 
           // Capture initial candidate frame
           if (video && video.readyState >= 2) {
@@ -989,31 +1249,36 @@ export default function CCTVMonitor({
             }
           }
 
-          console.log(`[TRACKING] ${formattedId} created for new object: ${cand.class}`);
+          console.log(`[TRACKING] ${formattedId} created for object: ${cand.class} (authorized=${isAlreadyAuth})`);
           currentTrackers.push(newTracker);
         }
       }
 
       // Section 22: Prune trackers.
-      // For unconfirmed objects: prune after 2500ms absence.
-      // For confirmed PRESENT objects: DO NOT prune on temporary camera misses/noise!
-      // Keep PRESENT objects permanently on floor until explicit removal or 45s sustained absence.
+      // Objects absent for sustained duration are declared REMOVED from the Red Tag Area.
+      // Already-authorized items have a 10s grace period so hand occlusion while placing another item does NOT drop them.
+      // Unconfirmed or unauthorized items have a 2.5s responsive threshold.
       trackersRef.current = currentTrackers.filter(tr => {
         const timeSinceSeen = now - tr.lastSeen;
-        if (!tr.debounced) {
-          return timeSinceSeen < 2500;
-        }
-        if (timeSinceSeen >= 45000) {
-          console.log(`[TRACKING] ${tr.objectId} removed after sustained ${timeSinceSeen}ms absence`);
-          fetch('/api/vision/object-removed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ objectId: tr.objectId, label: tr.bestClass })
-          }).catch(() => {});
+        const pruneThreshold = tr.authorized ? 10000 : 2500;
+        if (timeSinceSeen >= pruneThreshold) {
+          if (tr.debounced) {
+            console.log(`[TRACKING] ${tr.objectId} removed after sustained ${timeSinceSeen}ms absence`);
+            authorizedAnchorsRef.current.delete(tr.objectId);
+            fetch('/api/vision/object-removed', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ objectId: tr.objectId, label: tr.bestClass })
+            }).catch(() => {});
+          }
           return false;
         }
         return true;
       });
+
+      if (trackersRef.current.length === 0 && unauthorizedAlertRef.current) {
+        onUnauthorizedAlertRef.current?.(null);
+      }
 
     } catch (err) {
       console.warn('Detection inference error:', err);
@@ -1059,11 +1324,11 @@ export default function CCTVMonitor({
 
         for (const tracker of trackersRef.current) {
           tracker.targetPersistenceMs = targetPersistenceMs;
-          // Section 12: Object base point on floor (x_center, y_bottom)
-          const basePoint = { x: tracker.centerX, y: tracker.y + tracker.height };
-          const inside = isPointInPolygon(basePoint, activePoly);
+          // Section 12: Object base point on floor with 3D multi-point footprint test
+          const polyTest = checkCandidateInPolygon(tracker, activePoly);
+          const inside = polyTest.inside;
           tracker.inside = inside;
-          tracker.footprint = basePoint;
+          tracker.footprint = polyTest.footprint;
 
           if (!inside) {
             // Section 2: Detector Miss Grace Period (OBJECT_MISSED_GRACE_MS = 1500ms)
@@ -1100,6 +1365,20 @@ export default function CCTVMonitor({
             const isAuth = !!(token && token.is_authorized);
             tracker.authorized = isAuth;
 
+            if (isAuth) {
+              authorizedAnchorsRef.current.set(tracker.objectId, {
+                objectId: tracker.objectId,
+                bestClass: tracker.bestClass,
+                x: tracker.x,
+                y: tracker.y,
+                width: tracker.width,
+                height: tracker.height,
+                centerX: tracker.centerX,
+                centerY: tracker.centerY,
+                authorized: true
+              });
+            }
+
             fetch('/api/vision/placement-confirmed', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1108,15 +1387,31 @@ export default function CCTVMonitor({
                 box: { x: tracker.x, y: tracker.y, width: tracker.width, height: tracker.height },
                 confidence: tracker.bestScore,
                 imageBase64,
-                objectId: tracker.objectId
+                objectId: tracker.objectId,
+                allowMultiPlacement: true
               })
             })
               .then(r => r.json())
               .then(data => {
                 if (data?.event) {
                   tracker.objectId = data.object_id || data.event.object_id || tracker.objectId;
-                  tracker.authorized = (data.event.authorization_status === 'AUTHORIZED');
+                  const isNowAuth = (data.event.authorization_status === 'AUTHORIZED') || !!data.event.alreadyAuthorized || tracker.authorized;
+                  tracker.authorized = isNowAuth;
                   tracker.state = data.object_state || 'PRESENT';
+
+                  if (isNowAuth) {
+                    authorizedAnchorsRef.current.set(tracker.objectId, {
+                      objectId: tracker.objectId,
+                      bestClass: tracker.bestClass,
+                      x: tracker.x,
+                      y: tracker.y,
+                      width: tracker.width,
+                      height: tracker.height,
+                      centerX: tracker.centerX,
+                      centerY: tracker.centerY,
+                      authorized: true
+                    });
+                  }
 
                   // CRITICAL: Suppress duplicate alerts for already-registered stationary objects
                   if (data.event.alreadyRecorded || data.event.alreadyAuthorized || data.event.alert_status === 'NO_ALERT') {
@@ -1149,24 +1444,24 @@ export default function CCTVMonitor({
           }
         }
       } else {
-        // Standby Screen
-        ctx.fillStyle = '#0a0d14';
+        // Standby Screen (Section 7 A: CAMERA OFFLINE)
+        ctx.fillStyle = '#0F172A';
         ctx.fillRect(0, 0, w, h);
 
-        ctx.strokeStyle = '#1e293b';
+        ctx.strokeStyle = '#334155';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h);
         ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
         ctx.stroke();
 
-        ctx.fillStyle = '#64748b';
-        ctx.font = '600 14px Inter, sans-serif';
+        ctx.fillStyle = '#F8FAFC';
+        ctx.font = '700 16px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('CAMERA FEED STANDBY', w / 2, h / 2 - 20);
-        ctx.font = '400 11px Inter, sans-serif';
-        ctx.fillStyle = '#475569';
-        ctx.fillText('Click "Connect Camera" above to start live surveillance', w / 2, h / 2 + 6);
+        ctx.fillText('CAMERA OFFLINE', w / 2, h / 2 - 12);
+        ctx.font = '500 12px Inter, sans-serif';
+        ctx.fillStyle = '#94A3B8';
+        ctx.fillText('Connect the camera to begin monitoring.', w / 2, h / 2 + 14);
         ctx.textAlign = 'left';
       }
 
@@ -1182,15 +1477,15 @@ export default function CCTVMonitor({
         if (calibrationModeRef.current !== 'draw') ctx.closePath();
 
         // Polygon Fill
-        ctx.fillStyle = calibrationModeRef.current !== 'none' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(239, 68, 68, 0.1)';
+        ctx.fillStyle = calibrationModeRef.current !== 'none' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(217, 45, 32, 0.08)';
         ctx.fill();
 
         // Dual Floor Tape Border
-        ctx.strokeStyle = '#ef4444';
+        ctx.strokeStyle = '#D92D20';
         ctx.lineWidth = 3;
         ctx.stroke();
 
-        ctx.strokeStyle = '#3b82f6';
+        ctx.strokeStyle = '#2563EB';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([6, 6]);
         ctx.stroke();
@@ -1198,7 +1493,7 @@ export default function CCTVMonitor({
 
         // Vertices Handles
         activePoly.forEach((v, idx) => {
-          ctx.fillStyle = calibrationModeRef.current !== 'none' ? '#38bdf8' : (idx % 2 === 0 ? '#ef4444' : '#3b82f6');
+          ctx.fillStyle = calibrationModeRef.current !== 'none' ? '#2563EB' : (idx % 2 === 0 ? '#D92D20' : '#2563EB');
           ctx.beginPath();
           ctx.arc(v.x, v.y, calibrationModeRef.current !== 'none' ? 8 : 4, 0, Math.PI * 2);
           ctx.fill();
@@ -1213,16 +1508,37 @@ export default function CCTVMonitor({
           }
         });
 
-        // Polygon Header Tag
+        // Polygon Header Tag (Section 6: ROI label: RED TAG AREA)
         if (activePoly.length >= 3 && calibrationModeRef.current === 'none') {
-          ctx.fillStyle = '#991b1b';
-          ctx.fillRect(activePoly[0].x + 6, activePoly[0].y - 20, 210, 20);
+          ctx.fillStyle = '#D92D20';
+          ctx.fillRect(activePoly[0].x + 6, activePoly[0].y - 20, 115, 20);
           ctx.fillStyle = '#ffffff';
           ctx.font = '700 10px Inter, sans-serif';
-          ctx.fillText('🔴 RED TAG AREA (USER CONFIGURED)', activePoly[0].x + 10, activePoly[0].y - 6);
+          ctx.fillText('RED TAG AREA', activePoly[0].x + 14, activePoly[0].y - 6);
         }
 
         ctx.restore();
+      }
+
+      // Draw Pedestrians/Workers as IGNORED (Industrial Standard: Never track human faces/bodies as placement objects)
+      if (cameraActive && detectedPersonsRef.current && detectedPersonsRef.current.length > 0) {
+        detectedPersonsRef.current.forEach(p => {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(p.x, p.y, p.width, p.height);
+          ctx.setLineDash([]);
+
+          // Pedestrian label pill
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          const pillY = Math.max(18, p.y);
+          ctx.fillRect(p.x, pillY - 18, 140, 18);
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '600 9px JetBrains Mono, monospace';
+          ctx.fillText('🚶 PEDESTRIAN (IGNORED)', p.x + 6, pillY - 5);
+          ctx.restore();
+        });
       }
 
       // 3. Draw Tracked Physical Objects Strictly Inside Red Tag Area Only (Section 33)
@@ -1333,51 +1649,59 @@ export default function CCTVMonitor({
         });
       }
 
-      // HUD Operational Status Banner
-      let statusLabel = 'MONITORING';
-      let statusText = '#34d399';
-      let statusBorder = '#10b981';
+      // HUD Operational Status Banner (Section 7: Exact Camera States)
+      let statusLabel = '● MONITORING';
+      let statusText = '#16803C';
+      let statusBorder = '#16803C';
+      let currentActivity = 'Waiting for an object...';
 
       const hasUnauthorized = trackersRef.current.some(t => t.inside && t.debounced && !t.authorized);
       const hasAuthorized = trackersRef.current.some(t => t.inside && t.debounced && t.authorized);
-      const hasConfirming = trackersRef.current.some(t => t.inside && !t.debounced);
+      const confirmingTracker = trackersRef.current.find(t => t.inside && !t.debounced);
       const hasTracked = trackersRef.current.length > 0;
 
       if (unauthorizedAlertRef.current || hasUnauthorized) {
-        statusLabel = '🚨 UNAUTHORIZED PLACEMENT';
-        statusText = '#fee2e2';
-        statusBorder = '#ef4444';
-      } else if (activeTokenRef.current && activeTokenRef.current.is_authorized) {
-        statusLabel = 'PLACEMENT AUTHORIZED (READY)';
-        statusText = '#a7f3d0';
-        statusBorder = '#34d399';
+        statusLabel = '⚠ UNAUTHORIZED PLACEMENT';
+        statusText = '#D92D20';
+        statusBorder = '#D92D20';
+        currentActivity = 'Unauthorized placement';
       } else if (hasAuthorized) {
-        statusLabel = 'AUTHORIZED OBJECT PRESENT';
-        statusText = '#a7f3d0';
-        statusBorder = '#10b981';
-      } else if (hasConfirming) {
-        statusLabel = 'PLACEMENT CONFIRMING';
-        statusText = '#fef08a';
-        statusBorder = '#f59e0b';
+        statusLabel = '✓ AUTHORIZED PLACEMENT';
+        statusText = '#16803C';
+        statusBorder = '#16803C';
+        currentActivity = 'Authorized placement';
+      } else if (confirmingTracker) {
+        const sec = ((confirmingTracker.stationaryDuration || 0) / 1000).toFixed(1);
+        statusLabel = `PLACEMENT BEING VERIFIED (${sec}s / 5.0s)`;
+        statusText = '#D97706';
+        statusBorder = '#D97706';
+        currentActivity = 'Placement being verified';
       } else if (hasTracked) {
         statusLabel = 'OBJECT DETECTED';
-        statusText = '#93c5fd';
-        statusBorder = '#3b82f6';
+        statusText = '#2563EB';
+        statusBorder = '#2563EB';
+        currentActivity = 'Object detected';
+      } else if (activeTokenRef.current && activeTokenRef.current.is_authorized) {
+        currentActivity = 'Waiting for RFID authorization';
+      }
+
+      if (typeof onActivityChange === 'function' && frameCount % 30 === 0) {
+        onActivityChange(currentActivity);
       }
 
       // Draw Status Pill (Top Left)
       ctx.save();
-      ctx.fillStyle = 'rgba(15, 20, 28, 0.85)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
       ctx.strokeStyle = statusBorder;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.roundRect(14, 14, 220, 28, 6);
+      ctx.roundRect(14, 14, 240, 28, 6);
       ctx.fill();
       ctx.stroke();
 
       ctx.fillStyle = statusText;
       ctx.font = '700 9.5px JetBrains Mono, monospace';
-      ctx.fillText(`● ${statusLabel}`, 24, 32);
+      ctx.fillText(statusLabel, 24, 32);
       ctx.restore();
 
       // Camera Stream Metadata (Top Right)
@@ -1473,36 +1797,50 @@ export default function CCTVMonitor({
   };
 
   return (
-    <div style={{
-      background: 'var(--bg-card)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-lg)',
-      padding: '16px',
+    <div className="soc-card" style={{
+      padding: '18px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '12px',
-      boxShadow: 'var(--shadow-card)'
+      gap: '14px'
     }}>
       {/* Header Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Video size={18} color="#ef4444" />
-          <h2 style={{ fontSize: '1rem', fontWeight: 600, color: '#f1f5f9' }}>
-            Live CCTV Feed & Manual Red Tag Area
-          </h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{
+            width: '32px',
+            height: '32px',
+            borderRadius: 'var(--radius-sm)',
+            background: cameraActive ? 'var(--success-bg)' : 'var(--bg-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: `1px solid ${cameraActive ? 'var(--success-border)' : 'var(--border-subtle)'}`
+          }}>
+            <Video size={16} color={cameraActive ? 'var(--success)' : 'var(--text-muted)'} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h2 style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.01em', margin: 0 }}>
+                LIVE RED TAG AREA
+              </h2>
+              <span className={cameraActive ? 'badge badge-success' : 'badge badge-neutral'}>
+                {cameraActive ? '● CAMERA ONLINE' : '● CAMERA OFFLINE'}
+              </span>
+            </div>
+          </div>
         </div>
 
         {/* Action Controls */}
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
           {/* Camera Selector & Refresh */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            {videoDevices.length > 0 ? (
+            {videoDevices.length > 0 && (
               <select
                 value={selectedDeviceId}
                 onChange={(e) => handleDeviceChange(e.target.value)}
                 style={{
                   padding: '5px 8px',
-                  fontSize: '0.72rem',
+                  fontSize: '0.74rem',
                   borderRadius: '6px',
                   background: 'var(--bg-surface)',
                   color: '#38bdf8',
@@ -1515,20 +1853,13 @@ export default function CCTVMonitor({
                   </option>
                 ))}
               </select>
-            ) : null}
+            )}
 
             <button
               onClick={refreshDevices}
-              title="Scan for connected cameras"
-              style={{
-                padding: '5px 7px',
-                borderRadius: '6px',
-                background: 'var(--bg-surface)',
-                color: 'var(--text-secondary)',
-                border: '1px solid var(--border-subtle)',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
+              title="Refresh Camera Hardware"
+              className="btn btn-outline btn-xs"
+              style={{ padding: '6px' }}>
               <RefreshCw size={12} />
             </button>
           </div>
@@ -1536,233 +1867,134 @@ export default function CCTVMonitor({
           {/* Connect / Disconnect Camera Button */}
           {!cameraActive ? (
             <button
-              onClick={() => startCamera()}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 12px',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                borderRadius: '6px',
-                background: '#10b981',
-                color: '#ffffff'
-              }}>
-              <Camera size={14} />
+              onClick={(e) => {
+                e.currentTarget.blur();
+                startCamera();
+              }}
+              className="btn btn-success btn-xs"
+              style={{ padding: '6px 12px' }}>
+              <Camera size={13} />
               Connect Camera
             </button>
           ) : (
             <button
-              onClick={stopCamera}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 12px',
-                fontSize: '0.75rem',
-                borderRadius: '6px',
-                background: 'rgba(239, 68, 68, 0.15)',
-                color: '#f87171',
-                border: '1px solid rgba(239, 68, 68, 0.3)'
-              }}>
-              Disconnect Camera
+              onClick={(e) => {
+                e.currentTarget.blur();
+                stopCamera();
+              }}
+              className="btn btn-outline btn-xs"
+              style={{ color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)', padding: '6px 10px' }}>
+              Disconnect
             </button>
           )}
 
-          {/* Quick Mark Placement Button */}
-          {cameraActive && calibrationMode === 'none' && (
-            <div style={{ display: 'flex', gap: '4px' }}>
-              <button
-                onClick={() => {
-                  const centerX = Math.round(polygonVertices.reduce((acc, v) => acc + v.x, 0) / polygonVertices.length);
-                  const centerY = Math.round(polygonVertices.reduce((acc, v) => acc + v.y, 0) / polygonVertices.length);
-                  const newItem = {
-                    id: `manual_${Date.now()}`,
-                    label: 'Floor Item',
-                    score: 95,
-                    x: Math.max(10, centerX - 35),
-                    y: Math.max(10, centerY - 30),
-                    width: 70,
-                    height: 60
-                  };
-                  setManualObjects([newItem]);
-                }}
-                title="Mark an object placement in Red Tag Area"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  fontWeight: 600,
-                  borderRadius: '6px',
-                  background: 'rgba(245, 158, 11, 0.15)',
-                  color: '#fbbf24',
-                  border: '1px solid rgba(245, 158, 11, 0.3)'
-                }}>
-                <span>📦 Mark Placed Item</span>
-              </button>
-              <button
-                onClick={() => {
-                  trackersRef.current = [];
-                  setManualObjects([]);
-                  floorBaselineRef.current = null;
-                  baselineFramesCount.current = 0;
-                  onUnauthorizedAlertRef.current?.(null);
-                  fetch('/api/vision/clear-objects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
-                }}
-                title="Clear all active object frames and re-zero floor baseline"
-                style={{
-                  padding: '5px 8px',
-                  fontSize: '0.7rem',
-                  borderRadius: '6px',
-                  background: 'rgba(239, 68, 68, 0.15)',
-                  color: '#f87171',
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                  cursor: 'pointer'
-                }}>
-                Clear Frames
-              </button>
-              <button
-                onClick={() => {
-                  floorBaselineRef.current = null;
-                  baselineFramesCount.current = 0;
-                  trackersRef.current = [];
-                  onUnauthorizedAlertRef.current?.(null);
-                }}
-                title="Re-zero and calibrate the empty floor reference"
-                style={{
-                  padding: '5px 8px',
-                  fontSize: '0.7rem',
-                  borderRadius: '6px',
-                  background: 'rgba(59, 130, 246, 0.15)',
-                  color: '#93c5fd',
-                  border: '1px solid rgba(59, 130, 246, 0.3)',
-                  cursor: 'pointer'
-                }}>
-                🎯 Zero Empty Floor
-              </button>
-            </div>
-          )}
-
-          {/* Manual Red Tag Calibration Controls */}
+          {/* Calibration Modes */}
           {calibrationMode === 'none' ? (
-            <div style={{ display: 'flex', gap: '4px' }}>
+            <>
               <button
                 onClick={() => setCalibrationMode('drag')}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  borderRadius: '6px',
-                  background: 'rgba(59, 130, 246, 0.15)',
-                  color: '#60a5fa',
-                  border: '1px solid rgba(59, 130, 246, 0.3)'
-                }}>
+                className="btn btn-outline btn-xs"
+                style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                title="Calibrate Floor Polygon">
                 <Crosshair size={12} />
-                Adjust Corners
+                Calibrate Area
               </button>
 
               <button
-                onClick={() => {
-                  setCalibrationMode('draw');
-                  setDrawPoints([]);
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  borderRadius: '6px',
-                  background: 'rgba(168, 85, 247, 0.15)',
-                  color: '#c084fc',
-                  border: '1px solid rgba(168, 85, 247, 0.3)'
-                }}>
-                <PenTool size={12} />
-                Draw New Area
+                onClick={() => setShowOperatorTools(prev => !prev)}
+                className={`btn btn-xs ${showOperatorTools ? 'btn-primary' : 'btn-outline'}`}
+                title="Toggle Quick Diagnostics Tools">
+                <Wrench size={12} />
+                <span>Tools</span>
               </button>
-            </div>
+            </>
           ) : calibrationMode === 'drag' ? (
-            <div style={{ display: 'flex', gap: '6px' }}>
+            <div style={{ display: 'flex', gap: '5px' }}>
               <button
                 onClick={() => savePolygon()}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  padding: '5px 12px',
-                  fontSize: '0.72rem',
-                  fontWeight: 600,
-                  borderRadius: '6px',
-                  background: '#10b981',
-                  color: '#ffffff'
-                }}>
-                <Check size={13} />
+                className="btn btn-success btn-xs"
+                style={{ padding: '5px 10px' }}>
+                <Check size={12} />
                 Save Area
               </button>
               <button
                 onClick={() => setCalibrationMode('none')}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  borderRadius: '6px',
-                  background: 'var(--bg-surface)',
-                  color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-subtle)'
-                }}>
+                className="btn btn-outline btn-xs">
                 Cancel
               </button>
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: '6px' }}>
+            <div style={{ display: 'flex', gap: '5px' }}>
               <button
                 disabled={drawPoints.length < 3}
                 onClick={() => savePolygon(drawPoints)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  padding: '5px 12px',
-                  fontSize: '0.72rem',
-                  fontWeight: 600,
-                  borderRadius: '6px',
-                  background: drawPoints.length >= 3 ? '#10b981' : '#334155',
-                  color: '#ffffff'
-                }}>
-                <Check size={13} />
+                className="btn btn-success btn-xs"
+                style={{ padding: '5px 10px' }}>
+                <Check size={12} />
                 Finish ({drawPoints.length} pts)
               </button>
               <button
                 onClick={() => setDrawPoints([])}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  borderRadius: '6px',
-                  background: 'var(--bg-surface)',
-                  color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-subtle)'
-                }}>
+                className="btn btn-outline btn-xs">
                 Clear
               </button>
               <button
                 onClick={() => setCalibrationMode('none')}
-                style={{
-                  padding: '5px 10px',
-                  fontSize: '0.72rem',
-                  borderRadius: '6px',
-                  background: 'var(--bg-surface)',
-                  color: 'var(--text-secondary)',
-                  border: '1px solid var(--border-subtle)'
-                }}>
+                className="btn btn-outline btn-xs">
                 Cancel
               </button>
             </div>
           )}
         </div>
       </div>
+
+      {/* Operator Quick Tools Drawer (Collapsible) */}
+      {showOperatorTools && cameraActive && calibrationMode === 'none' && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'rgba(14, 20, 34, 0.7)',
+          padding: '6px 12px',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border-subtle)',
+          flexWrap: 'wrap',
+          gap: '8px'
+        }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+            SURVEILLANCE OPERATOR OVERRIDES:
+          </span>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => {
+                trackersRef.current = [];
+                setManualObjects([]);
+                floorBaselineRef.current = null;
+                baselineFramesCount.current = 0;
+                onUnauthorizedAlertRef.current?.(null);
+                fetch('/api/vision/clear-objects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
+              }}
+              className="btn btn-outline btn-xs"
+              style={{ color: '#D92D20', borderColor: 'var(--brand-red-border)' }}
+              title="Clear all active object frames and alarms">
+              <span>🧹 Clear Frames</span>
+            </button>
+
+            <button
+              onClick={() => {
+                floorBaselineRef.current = null;
+                baselineFramesCount.current = 0;
+                trackersRef.current = [];
+                onUnauthorizedAlertRef.current?.(null);
+              }}
+              className="btn btn-outline btn-xs"
+              style={{ color: '#2563EB', borderColor: 'var(--info-border)' }}
+              title="Re-zero background floor baseline">
+              <span>🎯 Zero Empty Floor</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Real-Time Alarm Banner */}
       {(unauthorizedAlert || trackersRef.current.some(t => t.inside && t.debounced && !t.authorized)) && (
@@ -1981,24 +2213,24 @@ export default function CCTVMonitor({
           </div>
         ))}
 
-        {/* Floating Privacy Notice */}
+        {/* Floating Privacy Notice (Section 22: OBJECT-FOCUSED EVIDENCE) */}
         <div style={{
           position: 'absolute',
           bottom: '12px',
           left: '12px',
-          background: 'rgba(9, 13, 20, 0.85)',
-          backdropFilter: 'blur(6px)',
-          border: '1px solid rgba(16, 185, 129, 0.3)',
-          borderRadius: '6px',
+          background: 'rgba(255, 255, 255, 0.95)',
+          border: '1px solid var(--border-medium)',
+          borderRadius: 'var(--radius-xs)',
           padding: '4px 10px',
           display: 'flex',
           alignItems: 'center',
           gap: '6px',
-          fontSize: '0.7rem',
-          color: '#34d399'
+          fontSize: '0.72rem',
+          color: 'var(--text-secondary)',
+          boxShadow: 'var(--shadow-card)'
         }}>
-          <ShieldCheck size={12} />
-          <span>Zero-Human Privacy: Only placed objects inside your Red Tag area are cropped.</span>
+          <ShieldCheck size={13} color="var(--success)" />
+          <span><strong>OBJECT-FOCUSED EVIDENCE:</strong> Evidence capture is limited to the placed object within the Red Tag Area.</span>
         </div>
       </div>
 

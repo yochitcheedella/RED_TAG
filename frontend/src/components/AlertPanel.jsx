@@ -9,181 +9,166 @@ export default function AlertPanel({ alert, onViewEvidence, onDismiss }) {
   const timestamp = alert.timestamp || event.timestamp || new Date().toISOString();
   const timeStr = new Date(timestamp).toLocaleTimeString('en-US', { hour12: false });
   const objectType = alert.objectType || alert.object || event.object_type || 'Placed Object';
-  const rfidStatus = alert.rfidStatus || alert.reason || event.authorization_status || 'NOT SCANNED';
-  const employeeStatus = alert.employeeStatus || (alert.employee ? `${alert.employee} (${rfidStatus})` : 'NOT AVAILABLE');
-  const confidence = alert.confidence ? `${Math.round(alert.confidence * 100)}%` : '94%';
-  const areaName = alert.area || 'Red Tag Area (Floor Tape ROI)';
+  const objectId = alert.objectId || event.object_id || 'OBJ-UNKNOWN';
+  const rfidStatus = alert.rfidStatus || alert.reason || event.authorization_status || 'Not detected';
+  const employeeStatus = alert.employeeStatus || (alert.employee ? `${alert.employee}` : 'Not detected');
+  const areaName = alert.area || 'Red Tag Area';
   const evidenceImage = alert.evidenceImage || event.evidence_image;
 
   return (
     <div
       role="alert"
       style={{
-        background: 'linear-gradient(135deg, rgba(220, 38, 38, 0.95) 0%, rgba(153, 27, 27, 0.95) 100%)',
-        border: '2px solid #f87171',
-        borderRadius: '12px',
+        background: 'var(--brand-red-bg)',
+        border: '1.5px solid var(--brand-red)',
+        borderRadius: 'var(--radius-md)',
         padding: '16px 20px',
-        color: '#ffffff',
-        boxShadow: '0 10px 30px rgba(220, 38, 38, 0.5), 0 0 20px rgba(239, 68, 68, 0.35)',
+        color: 'var(--text-primary)',
+        boxShadow: 'var(--shadow-card-elevated)',
         display: 'flex',
         flexDirection: 'column',
-        gap: '14px',
-        animation: 'pulse 2s infinite ease-in-out',
+        gap: '12px',
         position: 'relative',
-        zIndex: 50
-      }}>
+        zIndex: 30
+      }}
+    >
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{
-            background: '#ffffff',
-            borderRadius: '8px',
-            padding: '6px',
+            background: 'var(--brand-red)',
+            borderRadius: 'var(--radius-sm)',
+            width: '32px',
+            height: '32px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.25)'
+            color: '#FFFFFF'
           }}>
-            <ShieldAlert size={24} color="#dc2626" />
+            <ShieldAlert size={20} />
           </div>
           <div>
-            <div style={{ fontSize: '0.72rem', letterSpacing: '0.1em', fontWeight: 800, textTransform: 'uppercase', color: '#fecaca' }}>
-              CRITICAL SECURITY ALERT
+            <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--brand-red-dark)', letterSpacing: '0.04em' }}>
+              CRITICAL MONITORING ALERT
             </div>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '0.02em', margin: 0, textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
-              UNAUTHORIZED RED TAG PLACEMENT
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--brand-red-dark)', margin: 0, lineHeight: 1.2 }}>
+              UNAUTHORIZED PLACEMENT DETECTED
             </h2>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{
-            fontSize: '0.75rem',
+            fontSize: '0.73rem',
             fontFamily: 'var(--font-mono)',
-            background: 'rgba(0, 0, 0, 0.35)',
-            padding: '4px 10px',
-            borderRadius: '6px',
-            border: '1px solid rgba(255, 255, 255, 0.25)'
+            background: '#FFFFFF',
+            padding: '3px 8px',
+            borderRadius: 'var(--radius-xs)',
+            border: '1px solid var(--brand-red-border)',
+            fontWeight: 600,
+            color: 'var(--brand-red-dark)'
           }}>
-            ID: {eventId}
+            {eventId}
           </span>
           {onDismiss && (
             <button
               onClick={onDismiss}
               title="Acknowledge Alert"
+              className="btn btn-outline btn-xs"
               style={{
-                background: 'rgba(0, 0, 0, 0.35)',
-                border: '1px solid rgba(255, 255, 255, 0.3)',
-                borderRadius: '6px',
-                padding: '4px 8px',
-                color: '#ffffff',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                fontSize: '0.75rem',
-                fontWeight: 600
-              }}>
-              <X size={16} />
+                borderColor: 'var(--brand-red-border)',
+                color: 'var(--brand-red-dark)',
+                background: '#FFFFFF'
+              }}
+            >
+              <X size={14} />
               <span>Acknowledge</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Forensic Information Grid (Section 23 Requirements) */}
+      {/* Forensic Information Grid */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-        gap: '10px',
-        background: 'rgba(0, 0, 0, 0.3)',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: '12px',
+        background: '#FFFFFF',
         padding: '12px 16px',
-        borderRadius: '8px',
-        border: '1px solid rgba(255, 255, 255, 0.15)'
+        borderRadius: 'var(--radius-sm)',
+        border: '1px solid var(--brand-red-border)'
       }}>
         <div>
-          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 700 }}>
-            Timestamp
+          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>
+            Time
           </div>
-          <div style={{ fontSize: '0.9rem', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
             {timeStr}
           </div>
         </div>
 
         <div>
-          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 700 }}>
+          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>
+            Object ID
+          </div>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+            {objectId}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>
             RFID Status
           </div>
-          <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#fef08a' }}>
-            {rfidStatus}
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--brand-red)' }}>
+            {rfidStatus === 'NO_RFID' ? 'Not detected' : rfidStatus}
           </div>
         </div>
 
         <div>
-          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 700 }}>
-            Employee Status
-          </div>
-          <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {employeeStatus}
-          </div>
-        </div>
-
-        <div>
-          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 700 }}>
+          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>
             Object Type
           </div>
-          <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#ffffff' }}>
-            {objectType} ({confidence})
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+            {objectType}
           </div>
         </div>
 
         <div>
-          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 700 }}>
+          <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700 }}>
             Monitored Area
           </div>
-          <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#93c5fd' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)' }}>
             {areaName}
           </div>
         </div>
       </div>
 
-      {/* Action Bar & Evidence Preview */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-        <div style={{ fontSize: '0.78rem', color: '#fecaca' }}>
-          🔒 <strong>Privacy Standard Enforced:</strong> CCTV frame was cropped strictly to the object bounding box. No human facial data was captured.
+      {/* Footer Info & Evidence Action */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          <strong>OBJECT-FOCUSED EVIDENCE:</strong> Evidence capture is limited to the placed object within the Red Tag Area.
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          {evidenceImage && onViewEvidence && (
-            <button
-              onClick={() => onViewEvidence({
-                ...event,
-                id: eventId,
-                timestamp,
-                object_type: objectType,
-                authorization_status: rfidStatus,
-                evidence_image: evidenceImage,
-                notes: alert.notes || event.notes || 'Unauthorized object placement detected.'
-              })}
-              style={{
-                background: '#ffffff',
-                color: '#991b1b',
-                padding: '8px 18px',
-                borderRadius: '6px',
-                fontWeight: 800,
-                fontSize: '0.82rem',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
-              }}>
-              <Eye size={16} />
-              <span>[VIEW OBJECT EVIDENCE]</span>
-            </button>
-          )}
-        </div>
+        {evidenceImage && onViewEvidence && (
+          <button
+            onClick={() => onViewEvidence({
+              ...event,
+              id: eventId,
+              timestamp,
+              object_id: objectId,
+              object_type: objectType,
+              authorization_status: rfidStatus,
+              evidence_image: evidenceImage,
+              notes: alert.notes || event.notes || 'Unauthorized object placement detected.'
+            })}
+            className="btn btn-danger btn-sm"
+            style={{ fontWeight: 700 }}
+          >
+            <Eye size={15} />
+            <span>View Object Evidence</span>
+          </button>
+        )}
       </div>
     </div>
   );

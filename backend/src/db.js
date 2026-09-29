@@ -92,12 +92,32 @@ db.exec(`
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     status TEXT DEFAULT 'TRIGGERED',
     message TEXT,
-    evidence_image_path TEXT
+    evidence_image_path TEXT,
+    mail_job_id TEXT,
+    email_status TEXT DEFAULT 'PENDING',
+    email_sent_at DATETIME,
+    email_error TEXT
   );
 
   CREATE TABLE IF NOT EXISTS system_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mail_jobs (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    alert_id TEXT,
+    recipient TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    evidence_path TEXT,
+    status TEXT DEFAULT 'PENDING', -- PENDING, SENT, FAILED
+    attempt_count INTEGER DEFAULT 0,
+    last_attempt_at DATETIME,
+    sent_at DATETIME,
+    failure_reason TEXT,
+    payload TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -110,6 +130,12 @@ try {
   if (!existingCols.includes('camera_id')) db.exec(`ALTER TABLE events ADD COLUMN camera_id TEXT DEFAULT 'CAM-01-REDTAG';`);
   if (!existingCols.includes('object_id')) db.exec(`ALTER TABLE events ADD COLUMN object_id TEXT;`);
   if (!existingCols.includes('object_state')) db.exec(`ALTER TABLE events ADD COLUMN object_state TEXT DEFAULT 'PRESENT';`);
+
+  const existingAlertCols = db.prepare(`PRAGMA table_info(alerts)`).all().map(c => c.name);
+  if (!existingAlertCols.includes('mail_job_id')) db.exec(`ALTER TABLE alerts ADD COLUMN mail_job_id TEXT;`);
+  if (!existingAlertCols.includes('email_status')) db.exec(`ALTER TABLE alerts ADD COLUMN email_status TEXT DEFAULT 'PENDING';`);
+  if (!existingAlertCols.includes('email_sent_at')) db.exec(`ALTER TABLE alerts ADD COLUMN email_sent_at DATETIME;`);
+  if (!existingAlertCols.includes('email_error')) db.exec(`ALTER TABLE alerts ADD COLUMN email_error TEXT;`);
 } catch (e) {
   console.warn('Migration note:', e.message);
 }
@@ -137,7 +163,8 @@ const defaultSettings = {
   serial_port: '',
   baud_rate: '9600',
   camera_mode: 'webcam',
-  capture_authorized_evidence: 'true'
+  capture_authorized_evidence: 'true',
+  alert_email_recipient: 'yochitcheedella@gmail.com'
 };
 
 for (const [key, val] of Object.entries(defaultSettings)) {
@@ -263,7 +290,7 @@ export function logEvent(eventData) {
           `ALT-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`,
           eventData.id,
           timestamp,
-          'TRIGGERED',
+          'OPEN',
           eventData.notes || `Unauthorized placement of ${eventData.object_type || 'object'} in Red Tag Area`,
           eventData.evidence_image || null
         );
@@ -322,14 +349,175 @@ export function logAlert(data) {
     data.id,
     data.object_event_id,
     timestamp,
-    data.status || 'TRIGGERED',
+    data.status || 'OPEN',
     data.message,
     data.evidence_image_path || null
   );
 }
 
-export function getAlerts(limit = 50) {
-  return db.prepare('SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?').all(limit);
+export function getAlerts(filter = 'ALL', limit = 100) {
+  // Normalize any legacy TRIGGERED alerts to OPEN
+  try {
+    db.prepare("UPDATE alerts SET status = 'OPEN' WHERE status = 'TRIGGERED'").run();
+  } catch (e) {}
+
+  let query = `
+    SELECT 
+      a.id,
+      a.object_event_id,
+      a.timestamp,
+      a.status,
+      a.message,
+      a.mail_job_id,
+      COALESCE(a.email_status, 'PENDING') as email_status,
+      a.email_sent_at,
+      a.email_error,
+      COALESCE(a.evidence_image_path, e.evidence_image) as evidence_image,
+      COALESCE(e.object_id, 'OBJ-' || SUBSTR(a.id, -4)) as object_id,
+      COALESCE(e.object_type, 'Placed Object') as object_type,
+      e.rfid_uid,
+      e.employee_name,
+      e.employee_id,
+      COALESCE(e.authorization_status, 'NO_RFID') as authorization_status,
+      e.time_difference,
+      e.confidence,
+      e.camera_id,
+      e.notes
+    FROM alerts a
+    LEFT JOIN events e ON a.object_event_id = e.id
+  `;
+  const params = [];
+  if (filter && filter !== 'ALL') {
+    query += ` WHERE UPPER(a.status) = ?`;
+    params.push(filter.toUpperCase());
+  }
+  query += ` ORDER BY a.timestamp DESC LIMIT ?`;
+  params.push(limit);
+  return db.prepare(query).all(...params);
+}
+
+export function getAlertById(id) {
+  return db.prepare(`
+    SELECT 
+      a.id,
+      a.object_event_id,
+      a.timestamp,
+      a.status,
+      a.message,
+      a.mail_job_id,
+      COALESCE(a.email_status, 'PENDING') as email_status,
+      a.email_sent_at,
+      a.email_error,
+      COALESCE(a.evidence_image_path, e.evidence_image) as evidence_image,
+      COALESCE(e.object_id, 'OBJ-' || SUBSTR(a.id, -4)) as object_id,
+      COALESCE(e.object_type, 'Placed Object') as object_type,
+      e.rfid_uid,
+      e.employee_name,
+      e.employee_id,
+      COALESCE(e.authorization_status, 'NO_RFID') as authorization_status,
+      e.time_difference,
+      e.confidence,
+      e.camera_id,
+      e.notes
+    FROM alerts a
+    LEFT JOIN events e ON a.object_event_id = e.id
+    WHERE a.id = ?
+  `).get(id);
+}
+
+export function updateAlertStatus(id, status) {
+  const normStatus = status.toUpperCase();
+  const res = db.prepare('UPDATE alerts SET status = ? WHERE id = ?').run(normStatus, id);
+  const alertRow = db.prepare('SELECT object_event_id FROM alerts WHERE id = ?').get(id);
+  if (alertRow && alertRow.object_event_id) {
+    db.prepare('UPDATE events SET alert_status = ? WHERE id = ?').run(normStatus, alertRow.object_event_id);
+  }
+  return res.changes > 0;
+}
+
+// ─── MAIL JOBS MANAGEMENT (Section: Mail Processing Pipeline) ─────────────────
+
+export function createMailJob(job) {
+  const id = job.id || `MAIL-${Date.now().toString().slice(-5)}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+  const stmt = db.prepare(`
+    INSERT INTO mail_jobs (
+      id, event_id, alert_id, recipient, subject, evidence_path,
+      status, attempt_count, last_attempt_at, sent_at, failure_reason, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    id,
+    job.event_id,
+    job.alert_id || null,
+    job.recipient,
+    job.subject,
+    job.evidence_path || null,
+    job.status || 'PENDING',
+    job.attempt_count || 0,
+    job.last_attempt_at || null,
+    job.sent_at || null,
+    job.failure_reason || null,
+    typeof job.payload === 'object' ? JSON.stringify(job.payload) : (job.payload || null)
+  );
+
+  // Link alert if alert_id is provided or found by event_id
+  if (job.alert_id) {
+    db.prepare('UPDATE alerts SET mail_job_id = ?, email_status = ? WHERE id = ?').run(id, job.status || 'PENDING', job.alert_id);
+  } else if (job.event_id) {
+    db.prepare('UPDATE alerts SET mail_job_id = ?, email_status = ? WHERE object_event_id = ?').run(id, job.status || 'PENDING', job.event_id);
+  }
+
+  return getMailJobById(id);
+}
+
+export function getMailJobById(id) {
+  return db.prepare('SELECT * FROM mail_jobs WHERE id = ?').get(id);
+}
+
+export function getMailJobByEventId(eventId) {
+  return db.prepare('SELECT * FROM mail_jobs WHERE event_id = ? ORDER BY created_at DESC LIMIT 1').get(eventId);
+}
+
+export function getMailJobByAlertId(alertId) {
+  return db.prepare('SELECT * FROM mail_jobs WHERE alert_id = ? ORDER BY created_at DESC LIMIT 1').get(alertId);
+}
+
+export function updateMailJob(id, updates) {
+  const current = getMailJobById(id);
+  if (!current) return null;
+
+  const status = updates.status !== undefined ? updates.status : current.status;
+  const attempt_count = updates.attempt_count !== undefined ? updates.attempt_count : current.attempt_count;
+  const last_attempt_at = updates.last_attempt_at !== undefined ? updates.last_attempt_at : current.last_attempt_at;
+  const sent_at = updates.sent_at !== undefined ? updates.sent_at : current.sent_at;
+  const failure_reason = updates.failure_reason !== undefined ? updates.failure_reason : current.failure_reason;
+
+  db.prepare(`
+    UPDATE mail_jobs
+    SET status = ?, attempt_count = ?, last_attempt_at = ?, sent_at = ?, failure_reason = ?
+    WHERE id = ?
+  `).run(status, attempt_count, last_attempt_at, sent_at, failure_reason, id);
+
+  // Synchronize alert row with email delivery status
+  if (current.alert_id) {
+    db.prepare(`
+      UPDATE alerts
+      SET email_status = ?, email_sent_at = ?, email_error = ?, mail_job_id = ?
+      WHERE id = ?
+    `).run(status, sent_at, failure_reason, id, current.alert_id);
+  } else if (current.event_id) {
+    db.prepare(`
+      UPDATE alerts
+      SET email_status = ?, email_sent_at = ?, email_error = ?, mail_job_id = ?
+      WHERE object_event_id = ?
+    `).run(status, sent_at, failure_reason, id, current.event_id);
+  }
+
+  return getMailJobById(id);
+}
+
+export function getPendingMailJobs() {
+  return db.prepare("SELECT * FROM mail_jobs WHERE status = 'PENDING' OR (status = 'FAILED' AND attempt_count < 3) ORDER BY created_at ASC").all();
 }
 
 // Section 82: Register Authorized/Tracked Object Record

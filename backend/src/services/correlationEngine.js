@@ -1,4 +1,6 @@
 import { rfidService } from './rfidService.js';
+import { reportingService } from './reportingService.js';
+import { mailQueueService } from './mailQueueService.js';
 import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
@@ -24,6 +26,7 @@ class CorrelationEngine {
 
   init(io) {
     this.io = io;
+    mailQueueService.setIO(io);
   }
 
   /**
@@ -43,12 +46,8 @@ class CorrelationEngine {
         return obj;
       }
 
-      // If both have different explicit IDs specified (e.g. TRACK-008B vs TRACK-009B), they are separate objects!
-      if (placementData.objectId && obj.objectId && placementData.objectId !== obj.objectId) {
-        continue;
-      }
-
-      // 2. Spatial Overlap or Proximity matching for objects without distinct IDs or slight coordinate shift
+      // 2. Spatial Overlap & Proximity matching: If an object is already PRESENT at these exact coordinates,
+      // it is the same physical object regardless of client tracker ID regeneration!
       if (box && obj.box && candCenterX !== null && candCenterY !== null) {
         const xA = Math.max(box.x, obj.box.x);
         const yA = Math.max(box.y, obj.box.y);
@@ -64,14 +63,10 @@ class CorrelationEngine {
         const objCenterY = obj.box.y + (obj.box.height || 0) / 2;
         const dist = Math.hypot(candCenterX - objCenterX, candCenterY - objCenterY);
 
-        if (iou >= 0.35 || dist < 45) {
+        // Strong spatial overlap (IoU >= 0.25) or close proximity (< 65px)
+        if (iou >= 0.25 || dist < 65) {
           return obj;
         }
-      }
-
-      // 3. If same specific label was placed recently and remains PRESENT nearby
-      if (placementData.objectType && obj.objectType === placementData.objectType && (Date.now() - obj.lastSeen < 10000)) {
-        return obj;
       }
     }
 
@@ -138,6 +133,13 @@ class CorrelationEngine {
     console.log('\n========================================');
     console.log(`🔍 [CORRELATION ENGINE] Evaluating Object Placement: ${placementData.objectType}`);
 
+    // Section 49 & Project Guideline: STRICTLY REJECT persons, pedestrians, or humans as placed objects
+    const objTypeLower = (placementData.objectType || '').toLowerCase();
+    if (objTypeLower === 'person' || objTypeLower === 'human' || objTypeLower === 'pedestrian' || objTypeLower === 'worker') {
+      console.warn(`🛡️ [CorrelationEngine] Rejected placement event for human entity: ${placementData.objectType}`);
+      return { success: false, reason: 'Persons cannot be registered as placed objects.' };
+    }
+
     // Section 84, 85, 89: CHECK IF THIS OBJECT IS ALREADY REGISTERED AS PRESENT
     const existing = this.findExistingObject(placementData);
     if (existing && existing.state === 'PRESENT') {
@@ -200,17 +202,23 @@ class CorrelationEngine {
         // CASE 1: AUTHORIZED PLACEMENT (Section 81 & 93)
         isAuthorized = true;
         authStatus = 'AUTHORIZED';
-        notes = `Authorized placement by ${employeeName} (${rfidUID}). Correlated in ${timeDifference}s (within ${authWindowMs / 1000}s window).`;
-
-        // Rule 10: ONE RFID SCAN = ONE PLACEMENT — consume immediately
-        rfidService.consumeToken();
+        // In industrial operations, an authorized badge tap grants an active drop-off window (default: 60s).
+        // Any objects placed by that authorized employee within the active window are AUTHORIZED.
+        // In live camera surveillance (allowMultiPlacement=true), an authorized badge tap grants an active drop-off session (60s).
+        // Any objects placed by that authorized employee within the active window are AUTHORIZED.
+        // In synthetic test workflows (without allowMultiPlacement), single-item token consumption is preserved.
+        const singlePlacementPerScan = getSetting('single_placement_per_scan') === 'true';
+        const forceSingleItem = placementData.consumeTokenImmediately || singlePlacementPerScan || !placementData.allowMultiPlacement;
+        if (forceSingleItem) {
+          rfidService.consumeToken();
+        }
       } else if (!activeToken.is_authorized) {
         // CASE 3: UNAUTHORIZED RFID CARD
         isAuthorized = false;
         authStatus = 'UNAUTHORIZED_RFID';
         notes = `Unauthorized placement: RFID UID ${rfidUID} (${employeeName}) is marked UNAUTHORIZED in the database.`;
 
-        // Rule 10: 1 Scan = 1 Placement — consume immediately so unauthorized tokens do not leak
+        // Unauthorized tokens are consumed immediately so they do not leak
         rfidService.consumeToken();
       }
     } else {
@@ -376,6 +384,12 @@ class CorrelationEngine {
           object_state: 'PRESENT',
           evidenceImage: finalEvidenceFilename,
           notes
+        });
+
+        // Section: RED TAG MONITOR — MAIL PROCESSING PIPELINE
+        // Enqueue mail job with verified evidence crop, HTML formatting, multipart attachments, and retry engine
+        mailQueueService.enqueueMailJob(savedEvent, finalEvidenceFilename).catch(err => {
+          console.warn('⚠️ [CorrelationEngine] Mail queue enqueue error:', err.message);
         });
       }
 

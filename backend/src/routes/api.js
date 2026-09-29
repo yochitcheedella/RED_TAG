@@ -7,18 +7,25 @@ import {
   saveEmployee,
   deleteEmployee,
   getEvents,
+  getAlerts,
+  getAlertById,
+  updateAlertStatus,
   getAllSettings,
   getSetting,
   updateSetting,
   getEmployeeByUID,
   getActiveObjects,
   getObjectById,
-  updateObjectState
+  updateObjectState,
+  getMailJobById,
+  getMailJobByAlertId,
+  getMailJobByEventId
 } from '../db.js';
 import { rfidService } from '../services/rfidService.js';
 import { visionService } from '../services/visionService.js';
 import { reportingService } from '../services/reportingService.js';
 import { correlationEngine } from '../services/correlationEngine.js';
+import { mailQueueService } from '../services/mailQueueService.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -249,6 +256,36 @@ router.get('/events', (req, res) => {
   res.json(events);
 });
 
+// Alerts Management
+router.get('/alerts', (req, res) => {
+  const filter = req.query.filter || 'ALL';
+  const limit = parseInt(req.query.limit || '100', 10);
+  const alerts = getAlerts(filter, limit);
+  res.json(alerts);
+});
+
+router.get('/alerts/:id', (req, res) => {
+  const alert = getAlertById(req.params.id);
+  if (!alert) return res.status(404).json({ error: 'Alert not found' });
+  res.json(alert);
+});
+
+router.post('/alerts/:id/acknowledge', (req, res) => {
+  const success = updateAlertStatus(req.params.id, 'ACKNOWLEDGED');
+  if (success && visionService.io) {
+    visionService.io.emit('alert_status_changed', { id: req.params.id, status: 'ACKNOWLEDGED' });
+  }
+  res.json({ success, id: req.params.id, status: 'ACKNOWLEDGED' });
+});
+
+router.post('/alerts/:id/resolve', (req, res) => {
+  const success = updateAlertStatus(req.params.id, 'RESOLVED');
+  if (success && visionService.io) {
+    visionService.io.emit('alert_status_changed', { id: req.params.id, status: 'RESOLVED' });
+  }
+  res.json({ success, id: req.params.id, status: 'RESOLVED' });
+});
+
 // Settings
 router.get('/settings', (req, res) => {
   const settings = getAllSettings();
@@ -355,6 +392,11 @@ router.post('/vision/placement-confirmed', async (req, res) => {
       objectId
     } = req.body;
 
+    const labelCheck = (objectType || '').toLowerCase();
+    if (labelCheck === 'person' || labelCheck === 'human' || labelCheck === 'pedestrian' || labelCheck === 'worker') {
+      return res.status(400).json({ error: 'Persons cannot be tracked as placed objects.' });
+    }
+
     let evidenceImage = null;
 
     if (imageBase64) {
@@ -417,6 +459,12 @@ router.post('/vision/clear-objects', (req, res) => {
     correlationEngine.handleObjectRemoved(objectId);
   } else {
     correlationEngine.clearAllObjects();
+    rfidService.activeToken = null;
+    rfidService.lastScannedToken = null;
+    if (rfidService.tokenTimer) {
+      clearTimeout(rfidService.tokenTimer);
+      rfidService.tokenTimer = null;
+    }
   }
   if (visionService.io) {
     visionService.io.emit('objects_cleared', { label: label || 'ALL', objectId });
@@ -548,6 +596,9 @@ router.post('/simulate/workflow/one-scan-two-objects', async (req, res) => {
     for (let f = 0; f < 6; f++) {
       await visionService.processFrameDetections([{ label: 'Pallet Box A', confidence: 0.93, box: box1 }], null);
     }
+
+    // Explicitly consume token for Rule 10 single-token test simulation
+    rfidService.consumeToken();
 
     const box2 = { x: roi.x + 120, y: roi.y + 30, width: 70, height: 60 };
     for (let f = 0; f < 6; f++) {
@@ -732,6 +783,132 @@ router.post('/reports/send-email', async (req, res) => {
     const zipRes = await reportingService.bundleReportZip(excelRes.filePath, []);
     const result = await reportingService.sendEmailAlert(event || {}, zipRes.zipPath, email);
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── MAIL PROCESSING PIPELINE ENDPOINTS (Section: Mail Processing Plan) ──────────
+
+// Get mail delivery status for an alert
+router.get('/alerts/:id/mail-status', (req, res) => {
+  try {
+    const alert = getAlertById(req.params.id);
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    let job = null;
+    if (alert.mail_job_id) {
+      job = getMailJobById(alert.mail_job_id);
+    }
+    if (!job && alert.object_event_id) {
+      job = getMailJobByEventId(alert.object_event_id);
+    }
+    if (!job) {
+      job = getMailJobByAlertId(alert.id);
+    }
+
+    res.json({
+      success: true,
+      alertId: alert.id,
+      emailStatus: alert.email_status || job?.status || 'PENDING',
+      emailSentAt: alert.email_sent_at || job?.sent_at || null,
+      emailError: alert.email_error || job?.failure_reason || null,
+      recipient: job?.recipient || getSetting('alert_email_recipient') || 'yochitcheedella@gmail.com',
+      job
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual email retry triggered by administrator from dashboard
+router.post('/alerts/:id/retry-email', async (req, res) => {
+  try {
+    const alert = getAlertById(req.params.id);
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    let job = null;
+    if (alert.mail_job_id) {
+      job = getMailJobById(alert.mail_job_id);
+    }
+    if (!job && alert.object_event_id) {
+      job = getMailJobByEventId(alert.object_event_id);
+    }
+    if (!job) {
+      job = getMailJobByAlertId(alert.id);
+    }
+
+    if (job) {
+      const retryResult = await mailQueueService.retryJob(job.id);
+      return res.json({ success: true, ...retryResult });
+    }
+
+    // If no existing job, enqueue one now and process immediately
+    const event = {
+      id: alert.object_event_id || alert.id,
+      timestamp: alert.timestamp,
+      object_id: alert.object_id,
+      object_type: alert.object_type,
+      authorization_status: alert.authorization_status,
+      evidence_image: alert.evidence_image,
+      alert_id: alert.id
+    };
+
+    const enqRes = await mailQueueService.enqueueMailJob(event, alert.evidence_image);
+    if (enqRes.mailJob) {
+      const processRes = await mailQueueService.processJob(enqRes.mailJob.id, { forceRetry: true, manual: true });
+      return res.json({ success: true, enqueued: true, ...processRes });
+    }
+
+    res.json({ success: true, enqueued: true, ...enqRes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Direct test-email trigger for unauthorized incident notifications
+router.post('/alerts/test-email', async (req, res) => {
+  try {
+    const { email = 'yochitcheedella@gmail.com' } = req.body;
+    const events = getEvents(20);
+    const unauthorizedEvent = events.find(e => e.event_type === 'UNAUTHORIZED_PLACEMENT' || e.authorization_status !== 'AUTHORIZED') || {
+      id: `EVT-${Date.now()}-TEST`,
+      timestamp: new Date().toISOString(),
+      event_type: 'UNAUTHORIZED_PLACEMENT',
+      object_type: 'Unregistered Equipment (Test)',
+      object_id: 'TRACK-801',
+      authorization_status: 'NO_RFID (Not detected)',
+      alert_status: 'ALERT_TRIGGERED',
+      notes: 'Diagnostic test incident dispatch to verify email notification delivery.'
+    };
+
+    let sampleEvidence = unauthorizedEvent.evidence_image;
+    if (!sampleEvidence && fs.existsSync(evidenceDir)) {
+      const files = fs.readdirSync(evidenceDir);
+      sampleEvidence = files.find(f => f.endsWith('.jpg') || f.endsWith('.png')) || null;
+    }
+
+    // Dispatch through the complete MailQueueService with multipart image attachment
+    const enqRes = await mailQueueService.enqueueMailJob(
+      unauthorizedEvent,
+      sampleEvidence,
+      email
+    );
+
+    let processRes = null;
+    if (enqRes.mailJob) {
+      processRes = await mailQueueService.processJob(enqRes.mailJob.id, { forceRetry: true, manual: true });
+    }
+
+    res.json({
+      success: true,
+      enqueued: true,
+      mailJob: enqRes.mailJob,
+      processResult: processRes,
+      smtpConfigured: !!mailQueueService.getSmtpTransporter(),
+      deliveryDetails: processRes?.details || null,
+      isSandbox: !!(processRes?.details && (processRes.details.includes('Sandbox Preview') || processRes.details.includes('Preview URL')))
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

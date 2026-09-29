@@ -1,5 +1,20 @@
-import React, { useState } from 'react';
-import { Users, UserPlus, ShieldCheck, ShieldAlert, Trash2, Radio, Check, X } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import {
+  Users,
+  UserPlus,
+  ShieldCheck,
+  ShieldAlert,
+  Trash2,
+  Radio,
+  Search,
+  Check,
+  X,
+  Building,
+  CreditCard,
+  UserCheck,
+  UserX,
+  Filter
+} from 'lucide-react';
 
 export default function EmployeeManager({
   employees = [],
@@ -8,6 +23,10 @@ export default function EmployeeManager({
   onSimulateRFID
 }) {
   const [isAdding, setIsAdding] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL'); // ALL | AUTHORIZED | UNAUTHORIZED
+  const [lastScannedUid, setLastScannedUid] = useState(null);
+
   const [formData, setFormData] = useState({
     id: '',
     rfid_uid: '',
@@ -16,11 +35,41 @@ export default function EmployeeManager({
     is_authorized: true
   });
 
+  // KPI Calculations
+  const totalEmployees = employees.length;
+  const authorizedCount = employees.filter(e => e.is_authorized === 1 || e.is_authorized === true).length;
+  const unauthorizedCount = totalEmployees - authorizedCount;
+  const departmentsCount = new Set(employees.map(e => e.department || 'General')).size;
+
+  // Filtered list
+  const filteredEmployees = useMemo(() => {
+    return employees.filter(emp => {
+      const matchesSearch =
+        (emp.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (emp.rfid_uid || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (emp.department || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (emp.id || '').toLowerCase().includes(searchQuery.toLowerCase());
+
+      const isAuth = emp.is_authorized === 1 || emp.is_authorized === true;
+      if (statusFilter === 'AUTHORIZED' && !isAuth) return false;
+      if (statusFilter === 'UNAUTHORIZED' && isAuth) return false;
+
+      return matchesSearch;
+    });
+  }, [employees, searchQuery, statusFilter]);
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.rfid_uid || !formData.name) return;
+    if (!formData.rfid_uid.trim() || !formData.name.trim()) return;
 
-    onSaveEmployee(formData);
+    onSaveEmployee({
+      id: formData.id.trim() || `EMP-${Date.now().toString().slice(-4)}`,
+      rfid_uid: formData.rfid_uid.trim().toUpperCase(),
+      name: formData.name.trim(),
+      department: formData.department.trim() || 'General',
+      is_authorized: formData.is_authorized
+    });
+
     setFormData({
       id: '',
       rfid_uid: '',
@@ -32,238 +81,456 @@ export default function EmployeeManager({
   };
 
   const toggleAuth = (emp) => {
+    const newStatus = !(emp.is_authorized === 1 || emp.is_authorized === true);
     onSaveEmployee({
       ...emp,
-      is_authorized: !emp.is_authorized
+      is_authorized: newStatus
     });
   };
 
+  const handleTestScan = (uid) => {
+    setLastScannedUid(uid);
+    if (onSimulateRFID) {
+      onSimulateRFID(uid);
+    }
+    setTimeout(() => setLastScannedUid(null), 3000);
+  };
+
   return (
-    <div style={{
-      background: 'var(--bg-card)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-lg)',
-      padding: '20px',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '16px',
-      boxShadow: 'var(--shadow-card)'
-    }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-        gap: '12px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Users size={20} color="#60a5fa" />
-          <div>
-            <h2 style={{ fontSize: '1.05rem', fontWeight: 600, color: '#f1f5f9' }}>
-              Employee & RFID Badge Registry
-            </h2>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Manage physical RFID card assignments and Red Tag Area placement clearance
-            </p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => setIsAdding(!isAdding)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '8px 14px',
-            borderRadius: '6px',
-            background: isAdding ? 'var(--bg-surface)' : '#2563eb',
-            color: '#fff',
-            fontSize: '0.8rem',
-            fontWeight: 600,
-            border: isAdding ? '1px solid var(--border-subtle)' : 'none'
-          }}>
-          <UserPlus size={14} />
-          {isAdding ? 'Cancel' : 'Add Employee'}
-        </button>
-      </div>
-
-      {/* Add Employee Form */}
-      {isAdding && (
-        <form onSubmit={handleSubmit} style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-md)',
-          padding: '16px',
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-          gap: '12px',
-          alignItems: 'flex-end'
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* 1. Header & Summary Stats */}
+      <div className="soc-card" style={{ padding: '20px' }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '16px',
+          borderBottom: '1px solid var(--border-subtle)',
+          paddingBottom: '16px',
+          marginBottom: '16px'
         }}>
           <div>
-            <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
-              RFID UID (Hex / Serial) *
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. C541890A"
-              required
-              value={formData.rfid_uid}
-              onChange={(e) => setFormData({ ...formData, rfid_uid: e.target.value.toUpperCase() })}
-              style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-            />
-          </div>
-
-          <div>
-            <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
-              Employee Name *
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. John Doe"
-              required
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div>
-            <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>
-              Department
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. Logistics"
-              value={formData.department}
-              onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-              style={{ width: '100%' }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px' }}>
-            <label style={{ fontSize: '0.75rem', color: '#f1f5f9', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={formData.is_authorized}
-                onChange={(e) => setFormData({ ...formData, is_authorized: e.target.checked })}
-                style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-              />
-              <span>Authorized Clearance</span>
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{
+                width: '32px',
+                height: '32px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--brand-red-bg)',
+                color: 'var(--brand-red)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Users size={18} />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+                  EMPLOYEE & RFID REGISTRY
+                </h2>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '2px 0 0' }}>
+                  Register employee badges, configure department clearance, and authorize Red Tag Area placement permissions
+                </p>
+              </div>
+            </div>
           </div>
 
           <button
-            type="submit"
-            style={{
-              padding: '9px 16px',
-              borderRadius: '6px',
-              background: '#10b981',
-              color: '#fff',
-              fontWeight: 600,
-              fontSize: '0.8rem'
-            }}>
-            Save Employee
+            type="button"
+            onClick={() => setIsAdding(!isAdding)}
+            className="btn btn-sm btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            {isAdding ? <X size={14} /> : <UserPlus size={14} />}
+            <span>{isAdding ? 'Cancel' : 'Register New Employee'}</span>
           </button>
-        </form>
+        </div>
+
+        {/* Metric Badges Grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '12px'
+        }}>
+          <div style={{
+            background: 'var(--bg-muted)',
+            padding: '12px 14px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border-subtle)'
+          }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Total Registered
+            </div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '2px' }}>
+              {totalEmployees}
+            </div>
+          </div>
+
+          <div style={{
+            background: 'var(--success-bg)',
+            padding: '12px 14px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--success-border)'
+          }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--success-dark)', textTransform: 'uppercase' }}>
+              Authorized Clearance
+            </div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--success)', marginTop: '2px' }}>
+              {authorizedCount}
+            </div>
+          </div>
+
+          <div style={{
+            background: 'var(--brand-red-bg)',
+            padding: '12px 14px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--brand-red-border)'
+          }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--brand-red-dark)', textTransform: 'uppercase' }}>
+              Unauthorized / Suspended
+            </div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--brand-red)', marginTop: '2px' }}>
+              {unauthorizedCount}
+            </div>
+          </div>
+
+          <div style={{
+            background: 'var(--bg-muted)',
+            padding: '12px 14px',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border-subtle)'
+          }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Active Departments
+            </div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '2px' }}>
+              {departmentsCount}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Add Employee Form Card (Collapsible) */}
+      {isAdding && (
+        <div className="soc-card" style={{ padding: '20px', border: '1px solid var(--brand-red)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <UserPlus size={16} color="var(--brand-red)" /> Register New Employee Badge
+            </h3>
+            <button
+              type="button"
+              onClick={() => setIsAdding(false)}
+              className="btn btn-xs btn-ghost"
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit} style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '14px',
+            alignItems: 'flex-end'
+          }}>
+            <div>
+              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>
+                Employee Full Name *
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Rajesh Kumar"
+                required
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                style={{ width: '100%', padding: '8px 12px', fontSize: '0.8125rem' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>
+                RFID Badge UID (Hex) *
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. A472198C or B7214492"
+                required
+                value={formData.rfid_uid}
+                onChange={(e) => setFormData({ ...formData, rfid_uid: e.target.value.toUpperCase() })}
+                style={{ width: '100%', fontFamily: 'var(--font-mono)', padding: '8px 12px', fontSize: '0.8125rem' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>
+                Department
+              </label>
+              <select
+                value={formData.department}
+                onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                style={{ width: '100%', padding: '8px 12px', fontSize: '0.8125rem' }}
+              >
+                <option value="Logistics">Logistics</option>
+                <option value="Quality Control">Quality Control</option>
+                <option value="Maintenance">Maintenance</option>
+                <option value="Production">Production</option>
+                <option value="Safety & Security">Safety & Security</option>
+                <option value="General">General Facility</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>
+                Employee ID (Optional)
+              </label>
+              <input
+                type="text"
+                placeholder="Auto-generated (EMP-xxxx)"
+                value={formData.id}
+                onChange={(e) => setFormData({ ...formData, id: e.target.value })}
+                style={{ width: '100%', fontFamily: 'var(--font-mono)', padding: '8px 12px', fontSize: '0.8125rem' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', height: '38px' }}>
+              <label style={{
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                cursor: 'pointer',
+                background: formData.is_authorized ? 'var(--success-bg)' : 'var(--bg-muted)',
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: `1px solid ${formData.is_authorized ? 'var(--success-border)' : 'var(--border-subtle)'}`,
+                width: '100%'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={formData.is_authorized}
+                  onChange={(e) => setFormData({ ...formData, is_authorized: e.target.checked })}
+                  style={{ width: '16px', height: '16px', accentColor: 'var(--success)', cursor: 'pointer' }}
+                />
+                <span>{formData.is_authorized ? '✓ Authorized Clearance' : '✗ Unauthorized (Restricted)'}</span>
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{ flex: 1, height: '38px', fontWeight: 700 }}
+              >
+                <Check size={14} /> Save Employee
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
-      {/* Employees Table */}
-      <div style={{
-        overflowX: 'auto',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)'
-      }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.8rem' }}>
-          <thead>
-            <tr style={{ background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-              <th style={{ padding: '10px 14px', fontWeight: 600 }}>Employee</th>
-              <th style={{ padding: '10px 14px', fontWeight: 600 }}>RFID UID</th>
-              <th style={{ padding: '10px 14px', fontWeight: 600 }}>Department</th>
-              <th style={{ padding: '10px 14px', fontWeight: 600 }}>Authorization Status</th>
-              <th style={{ padding: '10px 14px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {employees.map((emp) => {
-              const isAuth = emp.is_authorized === 1 || emp.is_authorized === true;
-              return (
-                <tr
-                  key={emp.id}
-                  style={{
-                    borderBottom: '1px solid var(--border-subtle)',
-                    transition: 'background 0.15s ease'
-                  }}>
-                  <td style={{ padding: '12px 14px', fontWeight: 600, color: '#f1f5f9' }}>
-                    {emp.name}
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                      ID: {emp.id}
-                    </div>
-                  </td>
-                  <td style={{ padding: '12px 14px', fontFamily: 'var(--font-mono)', color: '#60a5fa' }}>
-                    {emp.rfid_uid}
-                  </td>
-                  <td style={{ padding: '12px 14px', color: '#cbd5e1' }}>
-                    {emp.department || 'General'}
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <button
-                      onClick={() => toggleAuth(emp)}
-                      title="Click to toggle authorization"
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '4px 10px',
-                        borderRadius: '20px',
-                        fontSize: '0.72rem',
-                        fontWeight: 600,
-                        background: isAuth ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                        color: isAuth ? '#34d399' : '#f87171',
-                        border: `1px solid ${isAuth ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
-                      }}>
-                      {isAuth ? <ShieldCheck size={12} /> : <ShieldAlert size={12} />}
-                      <span>{isAuth ? 'Authorized' : 'Unauthorized'}</span>
-                    </button>
-                  </td>
-                  <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                    <div style={{ display: 'inline-flex', gap: '8px' }}>
-                      <button
-                        onClick={() => onSimulateRFID(emp.rfid_uid)}
-                        title="Simulate scanning this card"
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          padding: '5px 10px',
-                          borderRadius: '4px',
-                          background: 'rgba(59, 130, 246, 0.12)',
-                          color: '#60a5fa',
-                          border: '1px solid rgba(59, 130, 246, 0.25)',
-                          fontSize: '0.72rem'
-                        }}>
-                        <Radio size={12} />
-                        Test Scan
-                      </button>
+      {/* 3. Search, Filter Bar & Employee Table */}
+      <div className="soc-card" style={{ padding: '20px' }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px',
+          marginBottom: '16px'
+        }}>
+          {/* Search Input */}
+          <div style={{ position: 'relative', minWidth: '260px', flex: 1, maxWidth: '420px' }}>
+            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              placeholder="Search by name, RFID UID, or department..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                paddingLeft: '32px',
+                paddingRight: '12px',
+                fontSize: '0.8125rem'
+              }}
+            />
+          </div>
 
-                      <button
-                        onClick={() => onDeleteEmployee(emp.id)}
-                        title="Remove Employee"
-                        style={{
-                          padding: '5px',
-                          borderRadius: '4px',
-                          color: '#f87171',
-                          background: 'transparent'
-                        }}>
-                        <Trash2 size={14} />
-                      </button>
+          {/* Filter Chips */}
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {[
+              { id: 'ALL', label: `All (${totalEmployees})` },
+              { id: 'AUTHORIZED', label: `Authorized (${authorizedCount})` },
+              { id: 'UNAUTHORIZED', label: `Unauthorized (${unauthorizedCount})` }
+            ].map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setStatusFilter(f.id)}
+                className={`btn btn-sm ${statusFilter === f.id ? 'btn-outline' : 'btn-ghost'}`}
+                style={{
+                  fontWeight: 600,
+                  fontSize: '0.75rem',
+                  borderColor: statusFilter === f.id ? 'var(--brand-red)' : 'transparent',
+                  color: statusFilter === f.id ? 'var(--brand-red-dark)' : 'var(--text-secondary)',
+                  background: statusFilter === f.id ? 'var(--brand-red-bg)' : 'transparent'
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Employees Table */}
+        <div style={{
+          overflowX: 'auto',
+          border: '1px solid var(--border-medium)',
+          borderRadius: 'var(--radius-sm)'
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.8125rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-muted)', borderBottom: '1px solid var(--border-medium)', color: 'var(--text-secondary)' }}>
+                <th style={{ padding: '10px 14px', fontWeight: 700 }}>Employee</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700 }}>RFID UID Badge</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700 }}>Department</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700 }}>Placement Authorization</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700, textAlign: 'right' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEmployees.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ padding: '36px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Users size={28} style={{ opacity: 0.4, margin: '0 auto 8px' }} />
+                    <div style={{ fontWeight: 600 }}>No employee records found matching your filter</div>
+                    <div style={{ fontSize: '0.72rem', marginTop: '4px' }}>
+                      Click "Register New Employee" to assign badges
                     </div>
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              ) : (
+                filteredEmployees.map((emp) => {
+                  const isAuth = emp.is_authorized === 1 || emp.is_authorized === true;
+                  const isSimulating = lastScannedUid === emp.rfid_uid;
+
+                  return (
+                    <tr
+                      key={emp.id}
+                      style={{
+                        borderBottom: '1px solid var(--border-subtle)',
+                        background: isSimulating ? 'var(--info-bg)' : '#FFFFFF',
+                        transition: 'background 0.15s ease'
+                      }}
+                    >
+                      {/* Name and ID */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {emp.name}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          ID: {emp.id}
+                        </div>
+                      </td>
+
+                      {/* RFID UID Badge */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontFamily: 'var(--font-mono)',
+                          fontWeight: 700,
+                          fontSize: '0.78rem',
+                          background: 'var(--bg-muted)',
+                          color: 'var(--text-primary)',
+                          padding: '3px 8px',
+                          borderRadius: 'var(--radius-xs)',
+                          border: '1px solid var(--border-medium)'
+                        }}>
+                          <CreditCard size={12} color="var(--info)" />
+                          {emp.rfid_uid}
+                        </span>
+                      </td>
+
+                      {/* Department */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          color: 'var(--text-secondary)'
+                        }}>
+                          <Building size={12} />
+                          {emp.department || 'General'}
+                        </span>
+                      </td>
+
+                      {/* Clearance Toggle */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <button
+                          type="button"
+                          onClick={() => toggleAuth(emp)}
+                          title="Click to toggle authorization"
+                          className="btn btn-xs"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            fontWeight: 700,
+                            fontSize: '0.72rem',
+                            background: isAuth ? 'var(--success-bg)' : 'var(--brand-red-bg)',
+                            color: isAuth ? 'var(--success-dark)' : 'var(--brand-red-dark)',
+                            borderColor: isAuth ? 'var(--success-border)' : 'var(--brand-red-border)'
+                          }}
+                        >
+                          {isAuth ? <ShieldCheck size={13} color="var(--success)" /> : <ShieldAlert size={13} color="var(--brand-red)" />}
+                          <span>{isAuth ? 'AUTHORIZED' : 'UNAUTHORIZED'}</span>
+                        </button>
+                      </td>
+
+                      {/* Actions */}
+                      <td style={{ padding: '12px 14px', textAlign: 'right' }}>
+                        <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleTestScan(emp.rfid_uid)}
+                            title="Simulate scanning this badge on reader"
+                            className="btn btn-outline btn-xs"
+                            style={{
+                              borderColor: isSimulating ? 'var(--info)' : 'var(--border-medium)',
+                              color: isSimulating ? 'var(--info)' : 'var(--text-primary)',
+                              fontWeight: 600
+                            }}
+                          >
+                            <Radio size={12} className={isSimulating ? 'pulse' : ''} />
+                            <span>{isSimulating ? 'Scanned!' : 'Test Scan'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Are you sure you want to delete ${emp.name} (${emp.rfid_uid})?`)) {
+                                onDeleteEmployee(emp.id);
+                              }
+                            }}
+                            title="Remove Employee"
+                            className="btn btn-ghost btn-xs"
+                            style={{ color: 'var(--brand-red)', padding: '5px' }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

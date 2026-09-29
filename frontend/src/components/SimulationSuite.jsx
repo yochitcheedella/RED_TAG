@@ -234,27 +234,45 @@ export default function SimulationSuite({ onSimulateRFID, onSimulatePlacement, a
   ];
 
   return (
-    <div style={{
-      background: 'var(--bg-card)',
-      border: '1px solid var(--border-subtle)',
-      borderRadius: 'var(--radius-lg)',
-      padding: '16px',
+    <div className="soc-card" style={{
+      padding: '20px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '14px',
-      boxShadow: 'var(--shadow-card)'
+      gap: '16px'
     }}>
+      {/* Prominent DEVELOPER / TESTING MODE Banner (Section 17) */}
+      <div style={{
+        background: '#FFFBEB',
+        border: '1px solid #FDE68A',
+        borderRadius: 'var(--radius-sm)',
+        padding: '10px 14px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '8px'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="badge badge-warning" style={{ fontSize: '0.75rem', fontWeight: 800 }}>
+            DEVELOPER / TESTING MODE
+          </span>
+          <span style={{ fontSize: '0.75rem', color: '#92400E', fontWeight: 600 }}>
+            Simulation environment isolated from production dashboard.
+          </span>
+        </div>
+        <span style={{ fontSize: '0.7rem', color: '#B45309', fontFamily: 'var(--font-mono)' }}>
+          Golden Tests 1–5 · Rule 10 · Group K/L
+        </span>
+      </div>
+
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Sparkles size={16} color="#60a5fa" />
-          <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#f1f5f9' }}>
+          <Sparkles size={16} color="var(--info)" />
+          <h2 style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
             Hardware &amp; Scenario Testing Suite
           </h2>
         </div>
-        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-          Golden Tests 1–5 · Decision Table · Groups J/K/L/Rule10
-        </span>
       </div>
 
       {/* Status Bar */}

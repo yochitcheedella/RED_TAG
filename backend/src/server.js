@@ -3,6 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import apiRouter from './routes/api.js';
@@ -33,9 +34,38 @@ app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// Serve cropped object evidence images strictly as static resources
+// Serve cropped object evidence images with multi-path resolution
 const evidenceDir = path.resolve(__dirname, '../uploads/evidence');
 app.use('/evidence', express.static(evidenceDir));
+app.use('/evidence/authorized', express.static(path.resolve(evidenceDir, 'authorized')));
+app.use('/evidence/unauthorized', express.static(path.resolve(evidenceDir, 'unauthorized')));
+
+// Intelligent fallback resolver for evidence files
+app.get('/evidence/:filename(*)', (req, res, next) => {
+  const rawParam = req.params.filename || '';
+  const base = path.basename(rawParam);
+  const candidates = [
+    path.resolve(evidenceDir, base),
+    path.resolve(evidenceDir, 'authorized', base),
+    path.resolve(evidenceDir, 'unauthorized', base),
+    path.resolve(__dirname, '../../../uploads/evidence', base),
+    path.resolve(__dirname, '../../../uploads/evidence/authorized', base),
+    path.resolve(__dirname, '../../../uploads/evidence/unauthorized', base)
+  ];
+
+  for (const cand of candidates) {
+    if (fs.existsSync(cand)) {
+      try {
+        const stats = fs.statSync(cand);
+        if (stats.size > 0) {
+          return res.sendFile(cand);
+        }
+      } catch (_) {}
+    }
+  }
+
+  next();
+});
 
 // Mount REST API
 app.use('/api', apiRouter);
