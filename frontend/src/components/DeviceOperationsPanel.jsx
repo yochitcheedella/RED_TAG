@@ -45,6 +45,15 @@ export default function DeviceOperationsPanel({
   const totalDuration = (activeToken && activeToken.duration_ms) || 60000;
   const progressPct = Math.min(100, Math.max(0, (remainingTime / totalDuration) * 100));
 
+  const formatWindowTime = (ms) => {
+    if (ms >= 60000) {
+      const mins = Math.floor(ms / 60000);
+      const secs = Math.floor((ms % 60000) / 1000);
+      return `${mins}:${secs.toString().padStart(2, '0')} window`;
+    }
+    return `${(ms / 1000).toFixed(1)}s window`;
+  };
+
   return (
     <div style={{
       display: 'flex',
@@ -313,7 +322,7 @@ export default function DeviceOperationsPanel({
                 fontWeight: 700,
                 color: activeToken.is_authorized ? 'var(--success)' : 'var(--brand-red)'
               }}>
-                {(remainingTime / 1000).toFixed(1)}s window
+                {formatWindowTime(remainingTime)}
               </span>
             </div>
 
@@ -321,6 +330,21 @@ export default function DeviceOperationsPanel({
               <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                 {activeToken.employee_name || 'Unknown RFID'}
               </div>
+              {activeToken.item_name && (
+                <div style={{
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  color: 'var(--brand-blue)',
+                  marginTop: '2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}>
+                  <span>Item:</span>
+                  <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{activeToken.item_name}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>({activeToken.duration_min || 5} min)</span>
+                </div>
+              )}
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                 UID: <code style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>{activeToken.uid}</code>
               </div>
@@ -328,9 +352,9 @@ export default function DeviceOperationsPanel({
                 fontSize: '0.75rem',
                 fontWeight: 700,
                 marginTop: '4px',
-                color: activeToken.is_authorized ? 'var(--success)' : 'var(--brand-red)'
+                color: (activeToken.is_authorized || activeToken.auth_status === 'AUTHORIZED') ? 'var(--success)' : 'var(--brand-red)'
               }}>
-                Authorization: {activeToken.is_authorized ? 'Authorized' : 'Unauthorized'}
+                Authorization: {(activeToken.is_authorized || activeToken.auth_status === 'AUTHORIZED') ? 'Authorized' : 'Unauthorized'}
               </div>
             </div>
 
@@ -339,7 +363,7 @@ export default function DeviceOperationsPanel({
               <div style={{
                 width: `${progressPct}%`,
                 height: '100%',
-                background: activeToken.is_authorized ? 'var(--success)' : 'var(--brand-red)',
+                background: (activeToken.is_authorized || activeToken.auth_status === 'AUTHORIZED') ? 'var(--success)' : 'var(--brand-red)',
                 transition: 'width 0.1s linear'
               }} />
             </div>

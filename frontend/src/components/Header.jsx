@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Radio, Video, AlertTriangle, FileText, BarChart3, Settings, Shield, User, Users, Volume2, VolumeX, Package, LogOut } from 'lucide-react';
+import { Camera, Radio, Video, FileText, BarChart3, Settings, Shield, User, Users, Volume2, VolumeX, Package, LogOut } from 'lucide-react';
 import { sounds } from '../utils/audio';
 
 export default function Header({
@@ -10,7 +10,6 @@ export default function Header({
   onOpenSettings,
   onLogoutToKiosk,
   cameraActive = false,
-  alertsCount = 0,
   userRole = 'admin',
   setUserRole
 }) {
@@ -61,7 +60,6 @@ export default function Header({
   const baseNavItems = [
     { id: 'placements', label: 'Placements', icon: Package },
     { id: 'monitor', label: 'Live Monitor', icon: Video },
-    { id: 'alerts', label: 'Alerts', icon: AlertTriangle, badge: alertsCount > 0 ? alertsCount : null },
     { id: 'events', label: 'Events', icon: FileText },
     { id: 'employees', label: 'Employees', icon: Users }
   ];
@@ -280,24 +278,24 @@ export default function Header({
           {muted ? <VolumeX size={15} color="#D92D20" /> : <Volume2 size={15} />}
         </button>
 
-        {/* Role Switcher Pill (Section 35) */}
+        {/* Admin User Badge */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 8px',
+          padding: '4px 10px',
           borderRadius: 'var(--radius-sm)',
           background: 'var(--bg-muted)',
           border: '1px solid var(--border-subtle)',
           fontSize: '0.75rem',
-          fontWeight: 600,
+          fontWeight: 700,
           color: 'var(--text-primary)'
         }}>
           <div style={{
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            background: userRole === 'developer' ? 'var(--info)' : (userRole === 'admin' ? 'var(--brand-red)' : 'var(--text-secondary)'),
+            background: 'var(--brand-red)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -305,30 +303,7 @@ export default function Header({
           }}>
             <User size={12} />
           </div>
-          <select
-            value={userRole}
-            onChange={(e) => {
-              setUserRole?.(e.target.value);
-              if (e.target.value === 'operator' && activeTab === 'reports') {
-                setActiveTab('monitor');
-              }
-            }}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              fontWeight: 700,
-              fontSize: '0.75rem',
-              color: 'var(--text-primary)',
-              cursor: 'pointer',
-              outline: 'none',
-              padding: '0 2px'
-            }}
-            title="Switch Operational Role (Section 35)"
-          >
-            <option value="operator">Operator</option>
-            <option value="admin">Admin</option>
-            <option value="developer">Developer</option>
-          </select>
+          <span>Admin</span>
         </div>
 
         {/* Return to Kiosk */}

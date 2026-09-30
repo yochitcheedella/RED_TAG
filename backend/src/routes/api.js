@@ -27,7 +27,8 @@ import {
   getAnyPendingKioskRegistration,
   expireOldKioskRegistrations,
   expireKioskRegistration,
-  getPlacements
+  getPlacements,
+  deletePlacement
 } from '../db.js';
 import {
   requireAdmin,
@@ -99,6 +100,18 @@ router.get('/admin/placements', requireAdmin, (req, res) => {
   const limit = parseInt(req.query.limit || '100', 10);
   const placements = getPlacements(limit);
   res.json(placements);
+});
+
+// Admin Delete Placement Record
+router.delete('/admin/placements/:id', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  try {
+    deletePlacement(id);
+    res.json({ success: true, message: 'Placement record deleted successfully.' });
+  } catch (err) {
+    console.error('Error deleting placement:', err);
+    res.status(500).json({ error: 'Failed to delete placement record.' });
+  }
 });
 
 // ==========================================
@@ -196,17 +209,8 @@ router.post('/kiosk/register-item', (req, res) => {
     duration_min: durationMinutes
   });
 
-  // Extend or refresh the active RFID token to match the selected duration
-  const durationMs = durationMinutes * 60 * 1000;
-  if (rfidService.activeToken && rfidService.activeToken.uid === cleanUID) {
-    rfidService.activeToken.expires_at = Date.now() + durationMs;
-  } else {
-    // If not already active, trigger scan to activate
-    rfidService.handleScan(cleanUID, 'KIOSK_REGISTRATION');
-    if (rfidService.activeToken) {
-      rfidService.activeToken.expires_at = Date.now() + durationMs;
-    }
-  }
+  // Extend active RFID token to match the registered placement duration
+  rfidService.extendTokenDuration(cleanUID, durationMinutes, item_name.trim());
 
   console.log(`📋 [Kiosk] Item registered: "${item_name}" by ${emp.name} (${cleanUID}), duration: ${durationMinutes}m`);
 

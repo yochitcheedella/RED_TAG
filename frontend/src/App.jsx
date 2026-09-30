@@ -5,16 +5,12 @@ import AdminLoginModal from './components/AdminLoginModal';
 import PlacementsManager from './components/PlacementsManager';
 import Header from './components/Header';
 import CCTVMonitor from './components/CCTVMonitor';
-import DeviceOperationsPanel from './components/DeviceOperationsPanel';
-import RecentEvents from './components/RecentEvents';
 import EvidenceModal from './components/EvidenceModal';
 import SettingsModal from './components/SettingsModal';
 import ReportingPanel from './components/ReportingPanel';
 import AlertPanel from './components/AlertPanel';
-import AlertsManager from './components/AlertsManager';
 import EventsManager from './components/EventsManager';
 import KPIMetricsBar from './components/KPIMetricsBar';
-import ActiveObjectsPanel from './components/ActiveObjectsPanel';
 import EmployeeManager from './components/EmployeeManager';
 import { sounds } from './utils/audio';
 
@@ -47,7 +43,10 @@ export default function App() {
   const [currentActivity, setCurrentActivity] = useState('Waiting for an object...');
 
   // Admin Tab Navigation
-  const [activeTab, setActiveTab] = useState('placements'); // 'placements' | 'monitor' | 'alerts' | 'events' | 'employees' | 'reports'
+  const [activeTab, setActiveTab] = useState('placements'); // 'placements' | 'monitor' | 'events' | 'employees' | 'reports'
+  useEffect(() => {
+    if (activeTab === 'alerts') setActiveTab('placements');
+  }, [activeTab]);
   const [userRole, setUserRole] = useState('admin');
   const [unauthorizedAlert, setUnauthorizedAlert] = useState(null);
   const [selectedEvidenceEvent, setSelectedEvidenceEvent] = useState(null);
@@ -164,10 +163,22 @@ export default function App() {
           uid: data.uid,
           employee_name: data.employee?.name || data.uid,
           expires_at: data.valid_until,
-          department: data.employee?.department || 'General'
+          department: data.employee?.department || 'General',
+          is_authorized: true,
+          auth_status: 'AUTHORIZED'
         });
       } else {
         sounds.playUnauthorized?.();
+      }
+    });
+
+    s.on('rfid_token_extended', (data) => {
+      if (data?.activeToken) {
+        setActiveToken({
+          ...data.activeToken,
+          is_authorized: true,
+          auth_status: 'AUTHORIZED'
+        });
       }
     });
 
@@ -317,10 +328,7 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────
   // VIEW MODE 1 & 2: EMPLOYEE KIOSK & ADMIN PORTAL
   // ─────────────────────────────────────────────────────────────
-  const openAlertsCount = events.filter(e =>
-    (e.event_type === 'UNAUTHORIZED_PLACEMENT' || e.alert_status === 'ALERT_TRIGGERED' || e.alert_status === 'OPEN') &&
-    e.status !== 'RESOLVED' && e.alert_status !== 'RESOLVED'
-  ).length;
+
 
   return (
     <>
@@ -367,7 +375,6 @@ export default function App() {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           cameraActive={cameraActive}
-          alertsCount={openAlertsCount}
           userRole={userRole}
           setUserRole={setUserRole}
         />
@@ -406,13 +413,8 @@ export default function App() {
               cameraActive={cameraActive}
             />
 
-            {/* Main Live Monitoring Area (65% / 35% Grid) */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1.85fr) minmax(0, 1fr)',
-              gap: '20px',
-              alignItems: 'start'
-            }}>
+            {/* Main Live Monitoring Area (Full Width) */}
+            <div style={{ width: '100%' }}>
               {/* Live Red Tag Area Camera & Polygon */}
               <CCTVMonitor
                 cctvRef={cctvMonitorRef}
@@ -427,37 +429,10 @@ export default function App() {
                 onCameraStateChange={setCameraActive}
                 onActivityChange={setCurrentActivity}
               />
-
-              {/* Operations Panel */}
-              <DeviceOperationsPanel
-                onSimulateRFID={handleSimulateRFID}
-                activeToken={activeToken}
-                systemStatus={systemStatus}
-                polygonVertices={polygonVertices}
-                cameraActive={cameraActive}
-                currentActivity={currentActivity}
-                unauthorizedAlert={unauthorizedAlert}
-                onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-              />
             </div>
-
-            {/* Active Tracked Objects */}
-            <ActiveObjectsPanel activeObjects={activeObjects} />
-
-            {/* Recent Events Audit Trail */}
-            <RecentEvents
-              events={events}
-              onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-            />
           </div>
 
-          {/* Tab 3: Alerts Manager */}
-          <div style={{ display: activeTab === 'alerts' ? 'block' : 'none' }}>
-            <AlertsManager
-              socket={socket}
-              onViewEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-            />
-          </div>
+
 
           {/* Tab 4: Events Log */}
           <div style={{ display: activeTab === 'events' ? 'block' : 'none' }}>

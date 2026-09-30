@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Lock, Shield, ArrowLeft, KeyRound, AlertCircle } from 'lucide-react';
 
 export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
-  const [username, setUsername] = useState('admin');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -113,7 +113,7 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
               Username
             </label>
             <input
-              type="text"
+              placeholder="Enter username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -154,9 +154,6 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
             />
           </div>
 
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-            Default credentials: <code style={{ color: 'var(--brand-primary)', fontFamily: 'monospace' }}>admin</code> / <code style={{ color: 'var(--brand-primary)', fontFamily: 'monospace' }}>admin123</code>
-          </div>
 
           <button
             type="submit"

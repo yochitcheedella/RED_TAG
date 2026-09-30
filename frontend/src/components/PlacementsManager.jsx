@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera } from 'lucide-react';
+import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera, Trash2 } from 'lucide-react';
 
 export default function PlacementsManager({ adminToken }) {
   const [placements, setPlacements] = useState([]);
@@ -27,24 +27,58 @@ export default function PlacementsManager({ adminToken }) {
     }
   };
 
+  const handleDeletePlacement = async (e, objectId, itemName) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete the placement record for "${itemName || 'this item'}"?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/admin/placements/${encodeURIComponent(objectId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`
+        }
+      });
+
+      if (res.ok) {
+        setPlacements(prev => prev.filter(p => p.object_id !== objectId));
+        if (selectedPlacement?.object_id === objectId) {
+          setSelectedPlacement(null);
+        }
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete placement record.');
+      }
+    } catch (err) {
+      console.error('Delete placement error:', err);
+      alert('Network error while deleting placement record.');
+    }
+  };
+
   useEffect(() => {
     fetchPlacements();
   }, [adminToken]);
 
   const filteredPlacements = placements.filter((p) => {
+    // Strictly display registered employee placements, excluding unauthorized/unidentified vision events
+    if (!p.employee_name || p.employee_name === 'Unidentified' || p.authorization_status !== 'AUTHORIZED') {
+      return false;
+    }
+
     const q = filterText.toLowerCase();
     const matchesSearch =
       (p.employee_name || '').toLowerCase().includes(q) ||
       (p.item_name || '').toLowerCase().includes(q) ||
       (p.department || '').toLowerCase().includes(q) ||
       (p.serial_number || '').toLowerCase().includes(q) ||
+      (p.placement_reason || '').toLowerCase().includes(q) ||
       (p.rfid_uid || '').toLowerCase().includes(q);
 
     const matchesStatus =
       statusFilter === 'ALL' ||
-      (statusFilter === 'PLACED' && (p.state === 'PRESENT' && p.authorization_status === 'AUTHORIZED')) ||
-      (statusFilter === 'REMOVED' && p.state === 'REMOVED') ||
-      (statusFilter === 'UNAUTHORIZED' && p.authorization_status !== 'AUTHORIZED');
+      (statusFilter === 'PLACED' && p.state === 'PRESENT') ||
+      (statusFilter === 'REMOVED' && p.state === 'REMOVED');
 
     return matchesSearch && matchesStatus;
   });
@@ -87,7 +121,7 @@ export default function PlacementsManager({ adminToken }) {
               Active Placements & Physical Assets Registry
             </h2>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Detailed audit trail of items registered at the kiosk and verified in the Red Tag Area.
+              Detailed audit trail of items registered by verified employees at the kiosk and verified in the Red Tag Area.
             </div>
           </div>
         </div>
@@ -126,10 +160,9 @@ export default function PlacementsManager({ adminToken }) {
               fontSize: '0.8rem'
             }}
           >
-            <option value="ALL">All Placements</option>
+            <option value="ALL">All Registered Placements</option>
             <option value="PLACED">Placed (Present)</option>
             <option value="REMOVED">Removed</option>
-            <option value="UNAUTHORIZED">Unauthorized Alert</option>
           </select>
 
           <button
@@ -278,14 +311,33 @@ export default function PlacementsManager({ adminToken }) {
 
                       {/* Action */}
                       <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                        <button
-                          onClick={() => setSelectedPlacement(p)}
-                          className="btn btn-outline btn-xs"
-                          style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        >
-                          <Eye size={12} />
-                          <span>Details</span>
-                        </button>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
+                          <button
+                            onClick={() => setSelectedPlacement(p)}
+                            className="btn btn-outline btn-xs"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                            title="View details"
+                          >
+                            <Eye size={12} />
+                            <span>Details</span>
+                          </button>
+                          <button
+                            onClick={(e) => handleDeletePlacement(e, p.object_id, p.item_name)}
+                            className="btn btn-outline btn-xs"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: '5px 7px',
+                              color: '#EF4444',
+                              borderColor: 'rgba(239, 68, 68, 0.35)',
+                              background: 'rgba(239, 68, 68, 0.05)'
+                            }}
+                            title="Delete placement"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -532,11 +584,26 @@ export default function PlacementsManager({ adminToken }) {
               padding: '14px 24px',
               borderTop: '1px solid var(--border-subtle)',
               display: 'flex',
-              justifyContent: 'flex-end',
+              justifyContent: 'space-between',
+              alignItems: 'center',
               background: 'var(--bg-muted)',
               borderBottomLeftRadius: 'var(--radius-lg)',
               borderBottomRightRadius: 'var(--radius-lg)'
             }}>
+              <button
+                onClick={(e) => handleDeletePlacement(e, selectedPlacement.object_id, selectedPlacement.item_name)}
+                className="btn btn-outline btn-sm"
+                style={{
+                  color: '#EF4444',
+                  borderColor: 'rgba(239, 68, 68, 0.4)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Trash2 size={14} />
+                <span>Delete Record</span>
+              </button>
               <button
                 onClick={() => setSelectedPlacement(null)}
                 className="btn btn-secondary btn-sm"

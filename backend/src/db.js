@@ -715,6 +715,9 @@ export function getPlacements(limit = 100) {
       o.evidence_image,
       o.camera_id
     FROM objects o
+    WHERE o.authorization_status = 'AUTHORIZED'
+      AND o.employee_name IS NOT NULL
+      AND o.employee_name != 'Unidentified'
     ORDER BY o.first_seen DESC
     LIMIT ?
   `).all(limit);
@@ -743,6 +746,33 @@ export function updateObjectState(id, state) {
 
 export function markObjectRemoved(id) {
   return updateObjectState(id, 'REMOVED');
+}
+
+export function deletePlacement(objectId) {
+  const obj = db.prepare('SELECT event_id FROM objects WHERE id = ?').get(objectId);
+  const eventId = obj?.event_id;
+
+  if (eventId) {
+    try {
+      db.prepare('DELETE FROM mail_jobs WHERE event_id = ?').run(eventId);
+    } catch (_) {}
+    try {
+      db.prepare('DELETE FROM events WHERE id = ?').run(eventId);
+    } catch (_) {}
+    try {
+      db.prepare('DELETE FROM kiosk_registrations WHERE event_id = ?').run(eventId);
+    } catch (_) {}
+  }
+
+  try {
+    db.prepare('DELETE FROM events WHERE object_id = ?').run(objectId);
+  } catch (_) {}
+
+  try {
+    db.prepare('DELETE FROM kiosk_registrations WHERE object_id = ?').run(objectId);
+  } catch (_) {}
+
+  return db.prepare('DELETE FROM objects WHERE id = ?').run(objectId);
 }
 
 export function getEvents(limit = 100) {

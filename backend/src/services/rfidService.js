@@ -141,7 +141,8 @@ class RFIDService {
           valid_until: this.activeToken.expires_at,
           duration_ms: authWindowMs,
           source,
-          refreshed: true
+          refreshed: true,
+          activeToken: this.activeToken
         });
       }
 
@@ -170,6 +171,8 @@ class RFIDService {
       department: employee ? employee.department : 'None',
       scanned_at: now,
       expires_at: now + authWindowMs,
+      duration_ms: authWindowMs,
+      duration_min: Math.max(1, Math.round(authWindowMs / 60000)),
       auth_status: authStatus,
       is_authorized: isAuthorized,
       consumed: false
@@ -215,7 +218,8 @@ class RFIDService {
         valid_until: isAuthorized ? this.activeToken.expires_at : null,
         duration_ms: authWindowMs,
         source,
-        event: eventLog
+        event: eventLog,
+        activeToken: this.activeToken
       });
     }
 
@@ -240,6 +244,56 @@ class RFIDService {
 
   getLastScannedToken() {
     return this.lastScannedToken;
+  }
+
+  extendTokenDuration(uid, durationMinutes, itemName = null) {
+    const cleanUID = uid ? uid.trim().toUpperCase() : null;
+    if (!this.activeToken || (cleanUID && this.activeToken.uid !== cleanUID)) {
+      if (cleanUID) {
+        this.handleScan(cleanUID, 'KIOSK_REGISTRATION');
+      }
+    }
+
+    if (!this.activeToken) return null;
+
+    const durationMs = durationMinutes * 60 * 1000;
+    const now = Date.now();
+    this.activeToken.duration_ms = durationMs;
+    this.activeToken.duration_min = durationMinutes;
+    this.activeToken.expires_at = now + durationMs;
+    if (itemName) {
+      this.activeToken.item_name = itemName;
+    }
+
+    if (this.tokenTimer) {
+      clearTimeout(this.tokenTimer);
+      this.tokenTimer = null;
+    }
+
+    this.tokenTimer = setTimeout(() => {
+      if (this.activeToken && (!cleanUID || this.activeToken.uid === cleanUID)) {
+        console.log(`⏳ Extended RFID Authorization token expired for ${this.activeToken.uid}`);
+        this.activeToken = null;
+        if (this.io) {
+          this.io.emit('rfid_token_expired', { uid: cleanUID, expired: true });
+        }
+      }
+    }, durationMs);
+
+    console.log(`⏱️ [RFID] Active token duration extended to ${durationMinutes}m (${durationMs}ms) for ${this.activeToken.uid}`);
+
+    if (this.io) {
+      this.io.emit('rfid_token_extended', {
+        uid: this.activeToken.uid,
+        duration_ms: durationMs,
+        duration_min: durationMinutes,
+        expires_at: this.activeToken.expires_at,
+        item_name: this.activeToken.item_name,
+        activeToken: { ...this.activeToken }
+      });
+    }
+
+    return this.activeToken;
   }
 
   /**

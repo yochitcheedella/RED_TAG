@@ -304,6 +304,15 @@ export default function CCTVMonitor({
     trackersRef.current = [];
   };
 
+  // Attempt auto-connecting camera when preferred device is ready on load
+  const autoConnectAttempted = useRef(false);
+  useEffect(() => {
+    if (!autoConnectAttempted.current && selectedDeviceId && !cameraActive) {
+      autoConnectAttempted.current = true;
+      startCamera(selectedDeviceId).catch(() => {});
+    }
+  }, [selectedDeviceId, cameraActive]);
+
   const handleDeviceChange = (newDeviceId) => {
     setSelectedDeviceId(newDeviceId);
     if (cameraActive) {
@@ -1729,8 +1738,8 @@ export default function CCTVMonitor({
         statusText = '#2563EB';
         statusBorder = '#2563EB';
         currentActivity = 'Object detected';
-      } else if (activeTokenRef.current && activeTokenRef.current.is_authorized) {
-        currentActivity = 'Waiting for RFID authorization';
+      } else if (activeTokenRef.current && (activeTokenRef.current.is_authorized || activeTokenRef.current.auth_status === 'AUTHORIZED')) {
+        currentActivity = 'Authorized: Awaiting object placement';
       }
 
       if (typeof onActivityChangeRef.current === 'function' && frameCount % 30 === 0) {
@@ -2188,7 +2197,7 @@ export default function CCTVMonitor({
           position: 'relative',
           width: '100%',
           aspectRatio: '4 / 3',
-          maxHeight: '480px',
+          maxHeight: '600px',
           background: '#090d14',
           borderRadius: 'var(--radius-md)',
           overflow: 'hidden',
