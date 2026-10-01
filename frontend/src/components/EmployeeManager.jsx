@@ -3,29 +3,23 @@ import {
   Users,
   UserPlus,
   ShieldCheck,
-  ShieldAlert,
   Trash2,
-  Radio,
   Search,
   Check,
   X,
   Building,
-  CreditCard,
-  UserCheck,
-  UserX,
-  Filter
+  CreditCard
 } from 'lucide-react';
 
 export default function EmployeeManager({
   employees = [],
+  userRole = 'admin',
   onSaveEmployee,
-  onDeleteEmployee,
-  onSimulateRFID
+  onDeleteEmployee
 }) {
   const [isAdding, setIsAdding] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL'); // ALL | AUTHORIZED | UNAUTHORIZED
-  const [lastScannedUid, setLastScannedUid] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('ALL'); // ALL | AUTHORIZED
 
   const [formData, setFormData] = useState({
     id: '',
@@ -38,7 +32,6 @@ export default function EmployeeManager({
   // KPI Calculations
   const totalEmployees = employees.length;
   const authorizedCount = employees.filter(e => e.is_authorized === 1 || e.is_authorized === true).length;
-  const unauthorizedCount = totalEmployees - authorizedCount;
   const departmentsCount = new Set(employees.map(e => e.department || 'General')).size;
 
   // Filtered list
@@ -52,7 +45,6 @@ export default function EmployeeManager({
 
       const isAuth = emp.is_authorized === 1 || emp.is_authorized === true;
       if (statusFilter === 'AUTHORIZED' && !isAuth) return false;
-      if (statusFilter === 'UNAUTHORIZED' && isAuth) return false;
 
       return matchesSearch;
     });
@@ -67,7 +59,7 @@ export default function EmployeeManager({
       rfid_uid: formData.rfid_uid.trim().toUpperCase(),
       name: formData.name.trim(),
       department: formData.department.trim() || 'General',
-      is_authorized: formData.is_authorized
+      is_authorized: true
     });
 
     setFormData({
@@ -78,22 +70,6 @@ export default function EmployeeManager({
       is_authorized: true
     });
     setIsAdding(false);
-  };
-
-  const toggleAuth = (emp) => {
-    const newStatus = !(emp.is_authorized === 1 || emp.is_authorized === true);
-    onSaveEmployee({
-      ...emp,
-      is_authorized: newStatus
-    });
-  };
-
-  const handleTestScan = (uid) => {
-    setLastScannedUid(uid);
-    if (onSimulateRFID) {
-      onSimulateRFID(uid);
-    }
-    setTimeout(() => setLastScannedUid(null), 3000);
   };
 
   return (
@@ -177,20 +153,6 @@ export default function EmployeeManager({
             </div>
             <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--success)', marginTop: '2px' }}>
               {authorizedCount}
-            </div>
-          </div>
-
-          <div style={{
-            background: 'var(--brand-red-bg)',
-            padding: '12px 14px',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--brand-red-border)'
-          }}>
-            <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--brand-red-dark)', textTransform: 'uppercase' }}>
-              Unauthorized / Suspended
-            </div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--brand-red)', marginTop: '2px' }}>
-              {unauthorizedCount}
             </div>
           </div>
 
@@ -292,28 +254,22 @@ export default function EmployeeManager({
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', height: '38px' }}>
-              <label style={{
+              <div style={{
                 fontSize: '0.8125rem',
                 fontWeight: 600,
-                color: 'var(--text-primary)',
+                color: 'var(--success-dark)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px',
-                cursor: 'pointer',
-                background: formData.is_authorized ? 'var(--success-bg)' : 'var(--bg-muted)',
+                background: 'var(--success-bg)',
                 padding: '8px 12px',
                 borderRadius: 'var(--radius-sm)',
-                border: `1px solid ${formData.is_authorized ? 'var(--success-border)' : 'var(--border-subtle)'}`,
+                border: '1px solid var(--success-border)',
                 width: '100%'
               }}>
-                <input
-                  type="checkbox"
-                  checked={formData.is_authorized}
-                  onChange={(e) => setFormData({ ...formData, is_authorized: e.target.checked })}
-                  style={{ width: '16px', height: '16px', accentColor: 'var(--success)', cursor: 'pointer' }}
-                />
-                <span>{formData.is_authorized ? '✓ Authorized Clearance' : '✗ Unauthorized (Restricted)'}</span>
-              </label>
+                <ShieldCheck size={16} color="var(--success)" />
+                <span>Authorized Clearance</span>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: '8px' }}>
@@ -360,8 +316,7 @@ export default function EmployeeManager({
           <div style={{ display: 'flex', gap: '6px' }}>
             {[
               { id: 'ALL', label: `All (${totalEmployees})` },
-              { id: 'AUTHORIZED', label: `Authorized (${authorizedCount})` },
-              { id: 'UNAUTHORIZED', label: `Unauthorized (${unauthorizedCount})` }
+              { id: 'AUTHORIZED', label: `Authorized (${authorizedCount})` }
             ].map((f) => (
               <button
                 key={f.id}
@@ -411,15 +366,12 @@ export default function EmployeeManager({
                 </tr>
               ) : (
                 filteredEmployees.map((emp) => {
-                  const isAuth = emp.is_authorized === 1 || emp.is_authorized === true;
-                  const isSimulating = lastScannedUid === emp.rfid_uid;
-
                   return (
                     <tr
                       key={emp.id}
                       style={{
                         borderBottom: '1px solid var(--border-subtle)',
-                        background: isSimulating ? 'var(--info-bg)' : '#FFFFFF',
+                        background: '#FFFFFF',
                         transition: 'background 0.15s ease'
                       }}
                     >
@@ -468,47 +420,31 @@ export default function EmployeeManager({
                         </span>
                       </td>
 
-                      {/* Clearance Toggle */}
+                      {/* Placement Authorization Badge */}
                       <td style={{ padding: '12px 14px' }}>
-                        <button
-                          type="button"
-                          onClick={() => toggleAuth(emp)}
-                          title="Click to toggle authorization"
-                          className="btn btn-xs"
+                        <span
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: '5px',
                             fontWeight: 700,
                             fontSize: '0.72rem',
-                            background: isAuth ? 'var(--success-bg)' : 'var(--brand-red-bg)',
-                            color: isAuth ? 'var(--success-dark)' : 'var(--brand-red-dark)',
-                            borderColor: isAuth ? 'var(--success-border)' : 'var(--brand-red-border)'
+                            background: 'var(--success-bg)',
+                            color: 'var(--success-dark)',
+                            border: '1px solid var(--success-border)',
+                            padding: '4px 8px',
+                            borderRadius: 'var(--radius-xs)',
+                            userSelect: 'none'
                           }}
                         >
-                          {isAuth ? <ShieldCheck size={13} color="var(--success)" /> : <ShieldAlert size={13} color="var(--brand-red)" />}
-                          <span>{isAuth ? 'AUTHORIZED' : 'UNAUTHORIZED'}</span>
-                        </button>
+                          <ShieldCheck size={13} color="var(--success)" />
+                          <span>AUTHORIZED</span>
+                        </span>
                       </td>
 
                       {/* Actions */}
                       <td style={{ padding: '12px 14px', textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>
-                          <button
-                            type="button"
-                            onClick={() => handleTestScan(emp.rfid_uid)}
-                            title="Simulate scanning this badge on reader"
-                            className="btn btn-outline btn-xs"
-                            style={{
-                              borderColor: isSimulating ? 'var(--info)' : 'var(--border-medium)',
-                              color: isSimulating ? 'var(--info)' : 'var(--text-primary)',
-                              fontWeight: 600
-                            }}
-                          >
-                            <Radio size={12} className={isSimulating ? 'pulse' : ''} />
-                            <span>{isSimulating ? 'Scanned!' : 'Test Scan'}</span>
-                          </button>
-
+                        {(userRole || '').toLowerCase() !== 'operator' && (
                           <button
                             type="button"
                             onClick={() => {
@@ -522,7 +458,7 @@ export default function EmployeeManager({
                           >
                             <Trash2 size={14} />
                           </button>
-                        </div>
+                        )}
                       </td>
                     </tr>
                   );

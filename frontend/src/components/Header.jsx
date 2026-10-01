@@ -278,7 +278,7 @@ export default function Header({
           {muted ? <VolumeX size={15} color="#D92D20" /> : <Volume2 size={15} />}
         </button>
 
-        {/* Admin User Badge */}
+        {/* User Profile Badge (Operator / Admin) */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -295,7 +295,7 @@ export default function Header({
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            background: 'var(--brand-red)',
+            background: (userRole || '').toLowerCase() === 'operator' ? '#2563EB' : 'var(--brand-red)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -303,7 +303,9 @@ export default function Header({
           }}>
             <User size={12} />
           </div>
-          <span>Admin</span>
+          <span style={{ textTransform: 'capitalize' }}>
+            {(userRole || '').toLowerCase() === 'operator' ? 'Operator' : 'Admin'}
+          </span>
         </div>
 
         {/* Return to Kiosk */}

@@ -224,9 +224,9 @@ class CorrelationEngine {
         event: {
           id: `PENDING-${objectId}`,
           object_id: objectId,
-          authorization_status: 'AUTHORIZED',
+          authorization_status: 'PENDING_CONFIRMATION',
           alert_status: 'NO_ALERT',
-          alreadyAuthorized: true,
+          alreadyAuthorized: false,
           evidence_image: placementData.evidenceImage
         },
         object_id: objectId,

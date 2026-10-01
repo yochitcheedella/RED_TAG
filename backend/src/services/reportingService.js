@@ -198,9 +198,16 @@ class ReportingService {
       // Append cropped object images (strictly object evidence, zero human photos)
       evidenceFilenames.forEach((img) => {
         if (!img) return;
-        const imgPath = path.join(evidenceDir, img);
-        if (fs.existsSync(imgPath)) {
-          archive.file(imgPath, { name: `evidence/${img}` });
+        const candidates = [
+          path.join(evidenceDir, img),
+          path.join(evidenceDir, 'unauthorized', img),
+          path.join(evidenceDir, 'authorized', img)
+        ];
+        for (const cand of candidates) {
+          if (fs.existsSync(cand)) {
+            archive.file(cand, { name: `evidence/${path.basename(img)}` });
+            break;
+          }
         }
       });
 
@@ -251,13 +258,52 @@ class ReportingService {
    * Sends Nodemailer email with attached compliance ZIP archive
    */
   async sendEmailAlert(eventData, zipFilePath, recipientEmail = 'plant-manager@factory.com') {
-    console.log(`✉️ [Email Dispatch] Sending incident audit bundle to: ${recipientEmail}`);
+    const recipient = (recipientEmail && recipientEmail.trim()) ||
+      process.env.ALERT_EMAIL_RECIPIENT ||
+      'yochitcheedella@gmail.com';
+
+    console.log(`✉️ [Email Dispatch] Sending incident audit bundle to: ${recipient}`);
 
     const mailOptions = {
-      from: '"Red Tag Monitoring System" <alerts@redtag-security.local>',
-      to: recipientEmail,
-      subject: `🚨 Security Audit Alert: Unauthorized Placement (${eventData.object_type || 'Object'})`,
-      text: `An unauthorized placement was verified in the Red Tag area.\n\nDetails:\nObject: ${eventData.object_type || 'Item'}\nTime: ${new Date().toLocaleString()}\nNotes: ${eventData.notes || 'None'}\n\nPlease find the attached Excel report and cropped object evidence archive.`,
+      from: `"Red Tag Monitoring System" <${process.env.SMTP_USER || 'alerts@redtag-security.local'}>`,
+      to: recipient,
+      subject: `🚨 Red Tag Area Incident & Compliance Audit Report`,
+      text: `Industrial Red Tag Area Monitoring & Compliance Report.\n\nSummary:\nTopic: ${eventData.object_type || 'Compliance Audit Report'}\nTime: ${new Date().toLocaleString()}\nDetails: ${eventData.notes || 'Routine compliance audit and incident log dispatch.'}\n\nPlease find the attached Excel report and compliance ZIP archive.`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; background: #f8fafc; color: #1e293b;">
+          <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+            <div style="background: #1e293b; color: #ffffff; padding: 18px 24px;">
+              <h2 style="margin: 0; font-size: 18px; font-weight: 800;">RED TAG MONITOR — COMPLIANCE AUDIT DISPATCH</h2>
+              <p style="margin: 4px 0 0; font-size: 12px; color: #94a3b8;">Automated Industrial Safety & Placement Reporting</p>
+            </div>
+            <div style="padding: 20px 24px;">
+              <p style="font-size: 14px; line-height: 1.5; color: #334155; margin: 0 0 16px;">
+                A comprehensive compliance audit report and forensic incident archive has been generated and dispatched for your review.
+              </p>
+              <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;">
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 10px 0; font-weight: bold; color: #64748b;">Report Scope:</td>
+                  <td style="padding: 10px 0; color: #0f172a; font-weight: 600;">${eventData.object_type || 'Compliance Audit Report'}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 10px 0; font-weight: bold; color: #64748b;">Dispatched At:</td>
+                  <td style="padding: 10px 0; color: #0f172a;">${new Date().toLocaleString()}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 10px 0; font-weight: bold; color: #64748b;">Summary / Notes:</td>
+                  <td style="padding: 10px 0; color: #0f172a;">${eventData.notes || 'Full incident logs attached.'}</td>
+                </tr>
+              </table>
+              <div style="background: #f1f5f9; padding: 12px 16px; border-radius: 6px; font-size: 12px; color: #475569; border: 1px solid #e2e8f0;">
+                📎 <strong>Attachments Included:</strong> Formatted Excel audit workbook and cropped forensic evidence images (${zipFilePath ? path.basename(zipFilePath) : 'ZIP Bundle'}).
+              </div>
+            </div>
+            <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 12px 24px; font-size: 11px; color: #94a3b8; text-align: center;">
+              Zero-Human Privacy Compliant Standard • Red Tag Surveillance Engine
+            </div>
+          </div>
+        </div>
+      `,
       attachments: zipFilePath && fs.existsSync(zipFilePath) ? [{
         filename: path.basename(zipFilePath),
         path: zipFilePath
@@ -268,16 +314,18 @@ class ReportingService {
     if (mailer) {
       try {
         const info = await mailer.sendMail(mailOptions);
-        return { success: true, messageId: info.messageId };
+        console.log(`✅ [Email Dispatch] Successfully delivered to ${recipient}: ${info.messageId}`);
+        return { success: true, delivered: true, messageId: info.messageId, recipient };
       } catch (err) {
-        console.warn('Email send error:', err.message);
+        console.error('❌ [Email Dispatch] Email send error:', err.message);
+        return { success: false, error: err.message, recipient };
       }
     }
 
     return {
       success: true,
       simulated: true,
-      recipient: recipientEmail,
+      recipient,
       subject: mailOptions.subject,
       attachment: zipFilePath ? path.basename(zipFilePath) : null
     };

@@ -17,9 +17,11 @@ import { sounds } from './utils/audio';
 const SOCKET_SERVER = 'http://localhost:3001';
 
 export default function App() {
-  // Primary Architecture Mode: 'kiosk' (Employee-Facing) | 'admin' (Administrator Portal)
+  // Primary Architecture Mode: 'kiosk' (Employee-Facing) | 'admin' (Administrator & Operator Portal)
   const [viewMode, setViewMode] = useState('kiosk');
   const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem('redtag_admin_token') || null);
+  const [userRole, setUserRole] = useState(() => sessionStorage.getItem('redtag_user_role') || 'admin');
+  const [loginRole, setLoginRole] = useState('operator');
   const [showAdminLogin, setShowAdminLogin] = useState(false);
 
   // Core System State
@@ -47,7 +49,6 @@ export default function App() {
   useEffect(() => {
     if (activeTab === 'alerts') setActiveTab('placements');
   }, [activeTab]);
-  const [userRole, setUserRole] = useState('admin');
   const [unauthorizedAlert, setUnauthorizedAlert] = useState(null);
   const [selectedEvidenceEvent, setSelectedEvidenceEvent] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -118,18 +119,23 @@ export default function App() {
         .then(data => {
           if (data.authenticated) {
             setAdminToken(savedToken);
+            const verifiedRole = (data.user?.role || sessionStorage.getItem('redtag_user_role') || 'admin').toLowerCase();
+            setUserRole(verifiedRole);
+            sessionStorage.setItem('redtag_user_role', verifiedRole);
             if (wantsAdmin) {
               setViewMode('admin');
               fetchAdminData(savedToken);
             }
           } else {
             sessionStorage.removeItem('redtag_admin_token');
+            sessionStorage.removeItem('redtag_user_role');
             setAdminToken(null);
             if (wantsAdmin) setShowAdminLogin(true);
           }
         })
         .catch(() => {
           sessionStorage.removeItem('redtag_admin_token');
+          sessionStorage.removeItem('redtag_user_role');
           setAdminToken(null);
         });
     } else if (wantsAdmin) {
@@ -230,6 +236,30 @@ export default function App() {
       ));
     });
 
+    // Real-Time Deletion Synchronization across all open clients (Admin & Operator)
+    s.on('event_deleted', (data) => {
+      const delId = data?.id || data?.eventId;
+      if (delId) {
+        setEvents(prev => prev.filter(e => e.id !== delId && e.event_id !== delId));
+        setUnauthorizedAlert(curr => (curr?.eventId === delId || curr?.event?.id === delId ? null : curr));
+        setSelectedEvidenceEvent(curr => (curr?.id === delId ? null : curr));
+      }
+    });
+
+    s.on('placement_deleted', (data) => {
+      const delId = data?.id || data?.objectId;
+      if (delId) {
+        setActiveObjects(prev => prev.filter(o => o.id !== delId && o.objectId !== delId));
+      }
+    });
+
+    s.on('employee_deleted', (data) => {
+      const delId = data?.id || data?.employeeId;
+      if (delId) {
+        setEmployees(prev => prev.filter(emp => emp.id !== delId));
+      }
+    });
+
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSocket(s);
 
@@ -237,6 +267,19 @@ export default function App() {
       s.disconnect();
     };
   }, []);
+
+  // Automatically clear activeToken when its validity expires
+  useEffect(() => {
+    if (!activeToken) return;
+    const checkExpiry = () => {
+      if (activeToken.expires_at && Date.now() > new Date(activeToken.expires_at).getTime()) {
+        setActiveToken(null);
+      }
+    };
+    checkExpiry();
+    const timer = setInterval(checkExpiry, 1000);
+    return () => clearInterval(timer);
+  }, [activeToken]);
 
   // Handlers
   const handleSaveROI = async (newROI) => {
@@ -308,7 +351,7 @@ export default function App() {
     }
   };
 
-  // Logout from Admin and return to Kiosk Mode (Rule 5 & 7)
+  // Logout from Admin/Operator and return to Kiosk Mode (Rule 5 & 7)
   const handleLogoutToKiosk = async () => {
     if (adminToken) {
       await fetch('/api/admin/logout', {
@@ -317,7 +360,9 @@ export default function App() {
       }).catch(() => {});
     }
     sessionStorage.removeItem('redtag_admin_token');
+    sessionStorage.removeItem('redtag_user_role');
     setAdminToken(null);
+    setUserRole('admin');
     setViewMode('kiosk');
     setShowAdminLogin(false);
     setEvents([]);
@@ -326,9 +371,8 @@ export default function App() {
   };
 
   // ─────────────────────────────────────────────────────────────
-  // VIEW MODE 1 & 2: EMPLOYEE KIOSK & ADMIN PORTAL
+  // VIEW MODE 1 & 2: EMPLOYEE KIOSK & ADMIN/OPERATOR PORTAL
   // ─────────────────────────────────────────────────────────────
-
 
   return (
     <>
@@ -340,6 +384,16 @@ export default function App() {
           socket={socket}
           onCaptureCurrentFrame={handleCaptureCurrentFrame}
           onOpenAdmin={() => {
+            setLoginRole('admin');
+            if (adminToken) {
+              setViewMode('admin');
+              fetchAdminData(adminToken);
+            } else {
+              setShowAdminLogin(true);
+            }
+          }}
+          onOpenOperator={() => {
+            setLoginRole('operator');
             if (adminToken) {
               setViewMode('admin');
               fetchAdminData(adminToken);
@@ -351,8 +405,12 @@ export default function App() {
 
         {showAdminLogin && (
           <AdminLoginModal
-            onLoginSuccess={(token) => {
+            initialRole={loginRole}
+            onLoginSuccess={(token, user) => {
               setAdminToken(token);
+              const resolvedRole = (user?.role || loginRole || 'admin').toLowerCase();
+              setUserRole(resolvedRole);
+              sessionStorage.setItem('redtag_user_role', resolvedRole);
               setShowAdminLogin(false);
               setViewMode('admin');
               fetchAdminData(token);
@@ -401,7 +459,7 @@ export default function App() {
 
           {/* Tab 1: Placements Manager */}
           <div style={{ display: activeTab === 'placements' ? 'block' : 'none' }}>
-            <PlacementsManager adminToken={adminToken} />
+            <PlacementsManager adminToken={adminToken} userRole={userRole} socket={socket} />
           </div>
 
           {/* Tab 2: Live Monitor (CCTVMonitor remains mounted persistently) */}
@@ -413,7 +471,7 @@ export default function App() {
               cameraActive={cameraActive}
             />
 
-            {/* Main Live Monitoring Area (Full Width) */}
+            {/* Main Live Monitoring Area (Full Width Professional Dashboard) */}
             <div style={{ width: '100%' }}>
               {/* Live Red Tag Area Camera & Polygon */}
               <CCTVMonitor
@@ -428,6 +486,7 @@ export default function App() {
                 onPolygonChange={(newPoly) => setPolygonVertices(newPoly)}
                 onCameraStateChange={setCameraActive}
                 onActivityChange={setCurrentActivity}
+                isActive={viewMode === 'admin' && activeTab === 'monitor'}
               />
             </div>
           </div>
@@ -438,7 +497,11 @@ export default function App() {
           <div style={{ display: activeTab === 'events' ? 'block' : 'none' }}>
             <EventsManager
               events={events}
+              adminToken={adminToken}
+              userRole={userRole}
+              socket={socket}
               onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
+              onDeleteEvent={(id) => setEvents(prev => prev.filter(e => e.id !== id))}
             />
           </div>
 
@@ -446,6 +509,7 @@ export default function App() {
           <div style={{ display: activeTab === 'employees' ? 'block' : 'none' }}>
             <EmployeeManager
               employees={employees}
+              userRole={userRole}
               onSaveEmployee={handleSaveEmployee}
               onDeleteEmployee={handleDeleteEmployee}
               onSimulateRFID={handleSimulateRFID}
@@ -454,7 +518,11 @@ export default function App() {
 
           {/* Tab 6: Reports */}
           <div style={{ display: activeTab === 'reports' ? 'block' : 'none' }}>
-            <ReportingPanel events={events} />
+            <ReportingPanel
+              events={events}
+              adminToken={adminToken}
+              defaultEmail={settings?.alert_email_recipient || 'yochitcheedella@gmail.com'}
+            />
           </div>
         </main>
 

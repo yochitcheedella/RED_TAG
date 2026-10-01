@@ -13,7 +13,8 @@ export default function CCTVMonitor({
   onPolygonChange,
   onCameraStateChange,
   onActivityChange,
-  cctvRef
+  cctvRef,
+  isActive
 }) {
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -59,8 +60,6 @@ export default function CCTVMonitor({
   // Spatial Proximity Trackers & Execution References
   const trackersRef = useRef([]);
   const nextTrackerId = useRef(1);
-  // Persistent spatial memory of confirmed authorized objects inside the Red Tag Area
-  const authorizedAnchorsRef = useRef(new Map());
   const isDetectingRef = useRef(false);
   const lastDetectTimeRef = useRef(0);
   const modelRef = useRef(null);
@@ -143,7 +142,6 @@ export default function CCTVMonitor({
   useEffect(() => {
     const handleClear = () => {
       trackersRef.current = [];
-      authorizedAnchorsRef.current.clear();
       setManualObjects([]);
       floorBaselineRef.current = null;
       baselineFramesCount.current = 0;
@@ -154,10 +152,8 @@ export default function CCTVMonitor({
       const removedId = e.detail?.objectId;
       if (removedId && removedId !== 'ALL') {
         trackersRef.current = trackersRef.current.filter(t => t.objectId !== removedId);
-        authorizedAnchorsRef.current.delete(removedId);
       } else {
         trackersRef.current = [];
-        authorizedAnchorsRef.current.clear();
       }
       if (trackersRef.current.length === 0) {
         onUnauthorizedAlertRef.current?.(null);
@@ -244,19 +240,25 @@ export default function CCTVMonitor({
       try {
         const constraints = {
           video: targetDevId
-            ? { deviceId: { ideal: targetDevId }, width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 } }
-            : { width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 }, facingMode: 'environment' }
+            ? { deviceId: { ideal: targetDevId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            : { width: { ideal: 1280 }, height: { ideal: 720 } }
         };
         stream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (strictErr) {
         console.warn('Initial camera constraints failed, attempting fallback:', strictErr);
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: targetDevId ? { deviceId: targetDevId } : true
-        });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: targetDevId ? { deviceId: { ideal: targetDevId } } : true
+          });
+        } catch (fbErr) {
+          console.warn('Target deviceId fallback failed, requesting any camera:', fbErr);
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
       }
 
       if (videoRef.current && stream) {
         videoRef.current.srcObject = stream;
+        videoRef.current.muted = true;
         videoRef.current.onloadedmetadata = async () => {
           try {
             await videoRef.current.play();
@@ -284,6 +286,8 @@ export default function CCTVMonitor({
             setSelectedDeviceId(hdPro.deviceId);
           } else if (targetDevId) {
             setSelectedDeviceId(targetDevId);
+          } else {
+            setSelectedDeviceId(inputs[0].deviceId);
           }
         }
       }).catch(() => {});
@@ -304,14 +308,23 @@ export default function CCTVMonitor({
     trackersRef.current = [];
   };
 
-  // Attempt auto-connecting camera when preferred device is ready on load
-  const autoConnectAttempted = useRef(false);
+  // Auto-connect camera immediately on mount
   useEffect(() => {
-    if (!autoConnectAttempted.current && selectedDeviceId && !cameraActive) {
-      autoConnectAttempted.current = true;
-      startCamera(selectedDeviceId).catch(() => {});
+    startCamera().catch(err => {
+      console.warn('Initial camera auto-start:', err);
+    });
+  }, []);
+
+  // Ensure camera stream is alive when tab/view becomes active
+  useEffect(() => {
+    if (isActive !== false) {
+      if (!cameraActive) {
+        startCamera().catch(() => {});
+      } else if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.play().catch(() => {});
+      }
     }
-  }, [selectedDeviceId, cameraActive]);
+  }, [isActive, cameraActive]);
 
   const handleDeviceChange = (newDeviceId) => {
     setSelectedDeviceId(newDeviceId);
@@ -1116,7 +1129,7 @@ export default function CCTVMonitor({
           const boxBArea = existing.width * existing.height;
           const iou = interArea / (boxAArea + boxBArea - interArea);
           const dist = Math.hypot(cand.centerX - existing.centerX, cand.centerY - existing.centerY);
-          return iou > 0.35 || dist < 15;
+          return iou > 0.25 || dist < 45;
         });
         if (!isOverlap) {
           candidates.push(cand);
@@ -1226,34 +1239,11 @@ export default function CCTVMonitor({
             }
           }
         } else {
-          // Check if this candidate is an already-authorized physical object that was temporarily occluded
-          let matchedAnchor = null;
-          for (const [anchorId, anchor] of authorizedAnchorsRef.current.entries()) {
-            const anchorCX = anchor.centerX || (anchor.x + anchor.width / 2);
-            const anchorCY = anchor.centerY || (anchor.y + anchor.height / 2);
-            const d = Math.hypot(cand.centerX - anchorCX, cand.centerY - anchorCY);
-            const xA = Math.max(cand.x, anchor.x);
-            const yA = Math.max(cand.y, anchor.y);
-            const xB = Math.min(cand.x + cand.width, anchor.x + anchor.width);
-            const yB = Math.min(cand.y + cand.height, anchor.y + anchor.height);
-            const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
-            const boxAArea = cand.width * cand.height;
-            const boxBArea = anchor.width * anchor.height;
-            const unionArea = boxAArea + boxBArea - interArea;
-            const iou = unionArea > 0 ? interArea / unionArea : 0;
-
-            if (iou >= 0.20 || d < 80) {
-              matchedAnchor = anchor;
-              break;
-            }
-          }
-
-          // New object entered scene (Section 4 & 7: Assign TRACK-xxx ID)
+          // New object entered scene (Assign clean TRACK-xxx ID)
           const newId = nextTrackerId.current++;
-          const formattedId = matchedAnchor ? matchedAnchor.objectId : `TRACK-${String(newId).padStart(3, '0')}`;
+          const formattedId = `TRACK-${String(newId).padStart(3, '0')}`;
           matchedTrackerIds.add(newId);
 
-          const isAlreadyAuth = !!matchedAnchor;
           const newTracker = {
             id: newId,
             objectId: formattedId,
@@ -1263,31 +1253,21 @@ export default function CCTVMonitor({
             height: cand.height,
             centerX: cand.centerX,
             centerY: cand.centerY,
-            bestClass: matchedAnchor?.bestClass || cand.class,
+            bestClass: cand.class,
             bestScore: cand.score,
             currentClass: cand.class,
             currentScore: cand.score,
             firstSeen: now,
             stationaryStart: now,
             lastSeen: now,
-            debounced: isAlreadyAuth,
-            authorized: isAlreadyAuth,
+            debounced: false,
+            authorized: false,
             isMoving: false,
             rawBox: cand.rawBox,
             candidateFrames: [],
             lastCandidateTime: 0,
-            state: isAlreadyAuth ? 'PRESENT' : 'PLACEMENT_CONFIRMING'
+            state: 'PLACEMENT_CONFIRMING'
           };
-
-          if (isAlreadyAuth) {
-            console.log(`🛡️ [TRACKING] Preserved AUTHORIZED status for ${formattedId} at [${cand.centerX}, ${cand.centerY}]`);
-            matchedAnchor.x = cand.x;
-            matchedAnchor.y = cand.y;
-            matchedAnchor.width = cand.width;
-            matchedAnchor.height = cand.height;
-            matchedAnchor.centerX = cand.centerX;
-            matchedAnchor.centerY = cand.centerY;
-          }
 
           // Capture initial candidate frame
           if (video && video.readyState >= 2) {
@@ -1304,7 +1284,7 @@ export default function CCTVMonitor({
             }
           }
 
-          console.log(`[TRACKING] ${formattedId} created for object: ${cand.class} (authorized=${isAlreadyAuth})`);
+          console.log(`[TRACKING] ${formattedId} created for object: ${cand.class}`);
           currentTrackers.push(newTracker);
         }
       }
@@ -1319,7 +1299,6 @@ export default function CCTVMonitor({
         if (timeSinceSeen >= pruneThreshold) {
           if (tr.debounced) {
             console.log(`[TRACKING] ${tr.objectId} removed after sustained ${timeSinceSeen}ms absence`);
-            authorizedAnchorsRef.current.delete(tr.objectId);
             fetch('/api/vision/object-removed', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1418,22 +1397,13 @@ export default function CCTVMonitor({
             // Section 10 & 11: Best frame selection from temporary buffer
             const imageBase64 = selectBestFrameCrop(tracker);
             const token = activeTokenRef.current;
-            const isAuth = !!(token && token.is_authorized);
-            tracker.authorized = isAuth;
-
-            if (isAuth) {
-              authorizedAnchorsRef.current.set(tracker.objectId, {
-                objectId: tracker.objectId,
-                bestClass: tracker.bestClass,
-                x: tracker.x,
-                y: tracker.y,
-                width: tracker.width,
-                height: tracker.height,
-                centerX: tracker.centerX,
-                centerY: tracker.centerY,
-                authorized: true
-              });
-            }
+            const isAuthByToken = !!(
+              token &&
+              token.is_authorized &&
+              token.expires_at &&
+              now <= new Date(token.expires_at).getTime()
+            );
+            tracker.authorized = isAuthByToken;
 
             fetch('/api/vision/placement-confirmed', {
               method: 'POST',
@@ -1451,31 +1421,20 @@ export default function CCTVMonitor({
               .then(data => {
                 if (data?.event) {
                   tracker.objectId = data.object_id || data.event.object_id || tracker.objectId;
-                  const isNowAuth = (data.event.authorization_status === 'AUTHORIZED') || !!data.event.alreadyAuthorized || tracker.authorized;
+                  const isNowAuth = data.event.authorization_status === 'AUTHORIZED';
                   tracker.authorized = isNowAuth;
                   tracker.state = data.object_state || 'PRESENT';
 
-                  if (isNowAuth) {
-                    authorizedAnchorsRef.current.set(tracker.objectId, {
-                      objectId: tracker.objectId,
-                      bestClass: tracker.bestClass,
-                      x: tracker.x,
-                      y: tracker.y,
-                      width: tracker.width,
-                      height: tracker.height,
-                      centerX: tracker.centerX,
-                      centerY: tracker.centerY,
-                      authorized: true
-                    });
-                  }
-
-                  // CRITICAL: Suppress duplicate alerts for already-registered stationary objects
+                  // Suppress duplicate alerts for already-registered stationary objects
                   if (data.event.alreadyRecorded || data.event.alreadyAuthorized || data.event.alert_status === 'NO_ALERT') {
-                    console.log(`[TRACKING] Object ${tracker.objectId} already registered. Suppressing duplicate alert.`);
+                    if (data.event.alreadyRecorded && !isNowAuth) {
+                      tracker.authorized = false;
+                    }
+                    console.log(`[TRACKING] Object ${tracker.objectId} already registered (${data.event.authorization_status}).`);
                     return;
                   }
 
-                  if (tracker.authorized) {
+                  if (isNowAuth) {
                     sounds.playAuthorized();
                     onUnauthorizedAlertRef.current?.(null);
                   } else {

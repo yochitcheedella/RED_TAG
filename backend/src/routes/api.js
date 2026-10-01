@@ -28,13 +28,16 @@ import {
   expireOldKioskRegistrations,
   expireKioskRegistration,
   getPlacements,
-  deletePlacement
+  deletePlacement,
+  deleteEvent
 } from '../db.js';
 import {
   requireAdmin,
+  requireStrictAdmin,
   generateAdminToken,
   revokeAdminToken,
-  verifyCredentials
+  verifyCredentials,
+  verifyOperatorCredentials
 } from '../middleware/auth.js';
 import { rfidService } from '../services/rfidService.js';
 import { visionService } from '../services/visionService.js';
@@ -52,7 +55,7 @@ if (!fs.existsSync(evidenceDir)) fs.mkdirSync(evidenceDir, { recursive: true });
 const router = express.Router();
 
 // ==========================================
-// 1. ADMINISTRATOR AUTHENTICATION ENDPOINTS
+// 1. ADMINISTRATOR & OPERATOR AUTHENTICATION
 // ==========================================
 router.post('/admin/login', (req, res) => {
   const { username, password } = req.body;
@@ -60,19 +63,32 @@ router.post('/admin/login', (req, res) => {
     return res.status(400).json({ error: 'Username and password required.' });
   }
 
+  // 1. Check if Admin credentials
   if (verifyCredentials(username, password)) {
-    const { token, expiresAt } = generateAdminToken(username);
+    const { token, expiresAt, role } = generateAdminToken(username, 'admin');
     console.log(`🔐 [Auth] Administrator logged in: ${username}`);
     return res.json({
       success: true,
       token,
       expiresAt,
-      user: { username, role: 'ADMIN' }
+      user: { username, role: 'admin' }
     });
   }
 
-  console.warn(`⚠️ [Auth] Failed admin login attempt for username: ${username}`);
-  return res.status(401).json({ error: 'Invalid administrator credentials.' });
+  // 2. Check if Operator credentials
+  if (verifyOperatorCredentials(username, password)) {
+    const { token, expiresAt, role } = generateAdminToken(username, 'operator');
+    console.log(`👷 [Auth] Operator logged in: ${username}`);
+    return res.json({
+      success: true,
+      token,
+      expiresAt,
+      user: { username, role: 'operator' }
+    });
+  }
+
+  console.warn(`⚠️ [Auth] Failed login attempt for username: ${username}`);
+  return res.status(401).json({ error: 'Invalid username or password.' });
 });
 
 router.get('/admin/verify', requireAdmin, (req, res) => {
@@ -102,15 +118,33 @@ router.get('/admin/placements', requireAdmin, (req, res) => {
   res.json(placements);
 });
 
-// Admin Delete Placement Record
-router.delete('/admin/placements/:id', requireAdmin, (req, res) => {
+// Admin Delete Placement Record (Restricted to Admin - Operators forbidden)
+router.delete('/admin/placements/:id', requireStrictAdmin, (req, res) => {
   const { id } = req.params;
   try {
     deletePlacement(id);
+    if (visionService?.io) {
+      visionService.io.emit('placement_deleted', { id, objectId: id });
+    }
     res.json({ success: true, message: 'Placement record deleted successfully.' });
   } catch (err) {
     console.error('Error deleting placement:', err);
     res.status(500).json({ error: 'Failed to delete placement record.' });
+  }
+});
+
+// Admin Delete Event Record (Restricted to Admin - Operators forbidden)
+router.delete('/admin/events/:id', requireStrictAdmin, (req, res) => {
+  const { id } = req.params;
+  try {
+    deleteEvent(id);
+    if (visionService?.io) {
+      visionService.io.emit('event_deleted', { id, eventId: id });
+    }
+    res.json({ success: true, message: 'Event record deleted successfully.' });
+  } catch (err) {
+    console.error('Error deleting event:', err);
+    res.status(500).json({ error: 'Failed to delete event record.' });
   }
 });
 
@@ -485,8 +519,11 @@ router.post('/employees', requireAdmin, (req, res) => {
   res.json(emp);
 });
 
-router.delete('/employees/:id', requireAdmin, (req, res) => {
+router.delete('/employees/:id', requireStrictAdmin, (req, res) => {
   deleteEmployee(req.params.id);
+  if (visionService?.io) {
+    visionService.io.emit('employee_deleted', { id: req.params.id, employeeId: req.params.id });
+  }
   res.json({ success: true });
 });
 
@@ -975,7 +1012,8 @@ router.post('/simulate/workflow/object-removal-replacement', async (req, res) =>
 
 router.post('/reports/generate', requireAdmin, async (req, res) => {
   try {
-    const events = getEvents(50);
+    const limit = parseInt(req.body.limit || '100', 10);
+    const events = getEvents(limit);
     const excelRes = await reportingService.generateIncidentExcel(events);
 
     const evidenceFiles = events
@@ -984,23 +1022,48 @@ router.post('/reports/generate', requireAdmin, async (req, res) => {
 
     const zipRes = await reportingService.bundleReportZip(excelRes.filePath, evidenceFiles);
 
+    // Retrieve active token to embed in download URLs for seamless one-click browser downloads
+    let token = '';
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else if (req.query.token) {
+      token = req.query.token;
+    }
+    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+
     res.json({
       success: true,
-      excelUrl: `/api/reports/download/${excelRes.filename}`,
-      zipUrl: `/api/reports/download/${zipRes.zipFilename}`,
+      excelUrl: `/api/reports/download/${excelRes.filename}${tokenQuery}`,
+      zipUrl: `/api/reports/download/${zipRes.zipFilename}${tokenQuery}`,
       zipFilename: zipRes.zipFilename,
       excelFilename: excelRes.filename,
       bytes: zipRes.bytes
     });
   } catch (err) {
+    console.error('Report generate error:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/reports/download/:filename', requireAdmin, (req, res) => {
-  const filePath = path.join(reportsDir, req.params.filename);
+router.get('/reports/download/:filename', (req, res) => {
+  let token = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  } else if (req.query.token) {
+    token = req.query.token;
+  }
+
+  const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.hostname === 'localhost';
+  if (!isLocal && !validateAdminToken(token)) {
+    return res.status(401).json({ error: 'Unauthorized: Administrator access required.' });
+  }
+
+  const safeFilename = path.basename(req.params.filename);
+  const filePath = path.join(reportsDir, safeFilename);
   if (fs.existsSync(filePath)) {
-    res.download(filePath);
+    res.download(filePath, safeFilename);
   } else {
     res.status(404).send('File not found');
   }
@@ -1019,12 +1082,19 @@ router.post('/reports/send-teams', requireAdmin, async (req, res) => {
 router.post('/reports/send-email', requireAdmin, async (req, res) => {
   try {
     const { email, event } = req.body;
-    const events = getEvents(10);
+    const recipient = (email && email.trim()) || getSetting('alert_email_recipient') || process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com';
+    const events = getEvents(100);
     const excelRes = await reportingService.generateIncidentExcel(events);
-    const zipRes = await reportingService.bundleReportZip(excelRes.filePath, []);
-    const result = await reportingService.sendEmailAlert(event || {}, zipRes.zipPath, email);
+
+    const evidenceFiles = events
+      .filter(e => e.evidence_image)
+      .map(e => e.evidence_image);
+
+    const zipRes = await reportingService.bundleReportZip(excelRes.filePath, evidenceFiles);
+    const result = await reportingService.sendEmailAlert(event || {}, zipRes.zipPath, recipient);
     res.json(result);
   } catch (err) {
+    console.error('Report email send error:', err);
     res.status(500).json({ error: err.message });
   }
 });

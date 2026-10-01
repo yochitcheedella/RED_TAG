@@ -1,11 +1,19 @@
 import React, { useState } from 'react';
-import { Lock, Shield, ArrowLeft, KeyRound, AlertCircle } from 'lucide-react';
+import { Lock, Shield, ArrowLeft, KeyRound, AlertCircle, ShieldCheck, UserCheck } from 'lucide-react';
 
-export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
+export default function AdminLoginModal({ onLoginSuccess, onCancel, initialRole = 'operator' }) {
+  const [activeRole, setActiveRole] = useState(initialRole || 'operator');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  const handleRoleChange = (newRole) => {
+    setActiveRole(newRole);
+    setErrorMsg(null);
+    setUsername('');
+    setPassword('');
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -28,9 +36,10 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
       setIsLoading(false);
 
       if (res.ok && data.success && data.token) {
-        // Store in sessionStorage (never permanent in localStorage)
         sessionStorage.setItem('redtag_admin_token', data.token);
-        onLoginSuccess(data.token, data.user);
+        const resolvedRole = (data.user?.role || activeRole).toLowerCase();
+        sessionStorage.setItem('redtag_user_role', resolvedRole);
+        onLoginSuccess(data.token, data.user || { username, role: resolvedRole });
       } else {
         setErrorMsg(data.error || 'Invalid credentials. Access denied.');
       }
@@ -39,6 +48,11 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
       setErrorMsg('Network error connecting to backend auth service.');
     }
   };
+
+  const isOperator = activeRole === 'operator';
+  const themeColor = isOperator ? '#2563EB' : '#EF4444';
+  const themeBg = isOperator ? 'rgba(37, 99, 235, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+  const themeBorder = isOperator ? 'rgba(37, 99, 235, 0.35)' : 'rgba(239, 68, 68, 0.35)';
 
   return (
     <div style={{
@@ -57,34 +71,95 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
         border: '1px solid var(--border-subtle)',
         borderRadius: 'var(--radius-lg)',
         width: '100%',
-        maxWidth: '420px',
-        padding: '32px 28px',
+        maxWidth: '440px',
+        padding: '28px 28px',
         boxShadow: '0 25px 60px rgba(0, 0, 0, 0.9)',
         display: 'flex',
         flexDirection: 'column',
-        gap: '20px'
+        gap: '18px'
       }}>
+        {/* Role Selector Tabs */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          background: 'var(--bg-muted)',
+          padding: '4px',
+          borderRadius: '10px',
+          border: '1px solid var(--border-subtle)',
+          gap: '4px'
+        }}>
+          <button
+            type="button"
+            onClick={() => handleRoleChange('operator')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '8px 12px',
+              borderRadius: '7px',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 700,
+              fontSize: '0.82rem',
+              transition: 'all 0.2s ease',
+              background: isOperator ? '#2563EB' : 'transparent',
+              color: isOperator ? '#FFFFFF' : 'var(--text-secondary)',
+              boxShadow: isOperator ? '0 2px 8px rgba(37, 99, 235, 0.35)' : 'none'
+            }}
+          >
+            <ShieldCheck size={14} />
+            <span>Operator Portal</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleRoleChange('admin')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '8px 12px',
+              borderRadius: '7px',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 700,
+              fontSize: '0.82rem',
+              transition: 'all 0.2s ease',
+              background: !isOperator ? '#DC2626' : 'transparent',
+              color: !isOperator ? '#FFFFFF' : 'var(--text-secondary)',
+              boxShadow: !isOperator ? '0 2px 8px rgba(220, 38, 38, 0.35)' : 'none'
+            }}
+          >
+            <Lock size={14} />
+            <span>Admin Portal</span>
+          </button>
+        </div>
+
         {/* Header */}
         <div style={{ textAlign: 'center' }}>
           <div style={{
             width: '54px',
             height: '54px',
             borderRadius: '16px',
-            background: 'linear-gradient(135deg, rgba(220, 38, 38, 0.2) 0%, rgba(185, 28, 28, 0.1) 100%)',
-            border: '1px solid rgba(220, 38, 38, 0.4)',
+            background: themeBg,
+            border: `1px solid ${themeBorder}`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            margin: '0 auto 14px auto',
-            boxShadow: '0 0 20px rgba(220, 38, 38, 0.25)'
+            margin: '0 auto 12px auto',
+            boxShadow: `0 0 20px ${themeBg}`
           }}>
-            <Lock size={26} color="#EF4444" />
+            {isOperator ? <UserCheck size={26} color={themeColor} /> : <Lock size={26} color={themeColor} />}
           </div>
-          <h2 style={{ fontSize: '1.3rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
-            Administrator Access
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
+            {isOperator ? 'Operator Portal Login' : 'Administrator Access'}
           </h2>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            Enter authorized security credentials to access the central monitoring dashboard.
+            {isOperator
+              ? 'Enter operator credentials to monitor the Red Tag Area in real-time.'
+              : 'Enter authorized administrator credentials to unlock full configuration control.'}
           </p>
         </div>
 
@@ -137,7 +212,7 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
             </label>
             <input
               type="password"
-              placeholder="••••••••"
+              placeholder="Enter password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -154,24 +229,30 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
             />
           </div>
 
-
           <button
             type="submit"
             disabled={isLoading}
-            className="btn btn-primary"
             style={{
               padding: '11px',
               fontSize: '0.9rem',
               fontWeight: 700,
-              marginTop: '6px',
+              marginTop: '4px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '8px'
+              gap: '8px',
+              background: isOperator
+                ? 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)'
+                : 'linear-gradient(135deg, #DC2626 0%, #B91C1C 100%)',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              boxShadow: isOperator ? '0 4px 14px rgba(37, 99, 235, 0.4)' : '0 4px 14px rgba(220, 38, 38, 0.4)'
             }}
           >
             <KeyRound size={16} />
-            <span>{isLoading ? 'Verifying...' : 'Authenticate & Unlock'}</span>
+            <span>{isLoading ? 'Verifying...' : (isOperator ? 'Login as Operator' : 'Authenticate & Unlock')}</span>
           </button>
         </form>
 
@@ -198,3 +279,4 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel }) {
     </div>
   );
 }
+

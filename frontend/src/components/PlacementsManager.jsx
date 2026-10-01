@@ -1,12 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera, Trash2 } from 'lucide-react';
+import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera, Trash2, Download } from 'lucide-react';
 
-export default function PlacementsManager({ adminToken }) {
+export default function PlacementsManager({ adminToken, userRole = 'admin', socket }) {
   const [placements, setPlacements] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [selectedPlacement, setSelectedPlacement] = useState(null);
+
+  // Real-time synchronization when any admin deletes a placement
+  useEffect(() => {
+    if (!socket) return;
+    const handlePlacementDeleted = (data) => {
+      const delId = data?.id || data?.objectId;
+      if (delId) {
+        setPlacements(prev => prev.filter(p => p.object_id !== delId && p.id !== delId));
+        setSelectedPlacement(curr => (curr?.object_id === delId || curr?.id === delId ? null : curr));
+      }
+    };
+    socket.on('placement_deleted', handlePlacementDeleted);
+    return () => {
+      socket.off('placement_deleted', handlePlacementDeleted);
+    };
+  }, [socket]);
 
   const fetchPlacements = async () => {
     setIsLoading(true);
@@ -56,6 +72,45 @@ export default function PlacementsManager({ adminToken }) {
     }
   };
 
+  const handleDownloadPlacement = (e, p) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (!p) return;
+
+    const data = {
+      system: 'RED TAG AREA SURVEILLANCE & RFID MONITOR',
+      export_type: 'PLACEMENT_RECORD',
+      exported_at: new Date().toISOString(),
+      object_id: p.object_id || p.id || 'N/A',
+      item_name: p.item_name || 'N/A',
+      serial_number: p.serial_number || 'N/A',
+      department: p.department || 'General',
+      employee_name: p.employee_name || 'Unidentified',
+      employee_id: p.employee_id || 'N/A',
+      rfid_uid: p.rfid_uid || 'N/A',
+      placement_reason: p.placement_reason || p.reason || 'N/A',
+      placement_duration_min: p.placement_duration_min || p.duration_min || 5,
+      authorization_status: p.authorization_status || 'UNKNOWN',
+      state: p.state || 'PRESENT',
+      registered_at: p.registered_at || p.placed_at || null,
+      placed_at: p.placed_at || null,
+      first_seen: p.first_seen || null,
+      last_seen: p.last_seen || null,
+      removed_at: p.removed_at || null,
+      evidence_image: p.evidence_image || p.evidenceImage || null
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeId = (p.object_id || p.item_name || 'placement').replace(/[^a-zA-Z0-9_-]/g, '_');
+    link.href = url;
+    link.setAttribute('download', `redtag_placement_${safeId}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   useEffect(() => {
     fetchPlacements();
   }, [adminToken]);
@@ -91,6 +146,42 @@ export default function PlacementsManager({ adminToken }) {
     } catch {
       return ts;
     }
+  };
+
+  const exportCSV = () => {
+    if (!filteredPlacements || filteredPlacements.length === 0) return;
+    const headers = [
+      'Placed At',
+      'Employee Name',
+      'Employee ID',
+      'Department',
+      'Item Name',
+      'Serial / ID',
+      'Placement Reason',
+      'Status',
+      'RFID UID'
+    ];
+    const rows = filteredPlacements.map((p) => [
+      `"${formatTimestamp(p.first_seen || p.timestamp || p.registered_at)}"`,
+      `"${(p.employee_name || 'Unidentified').replace(/"/g, '""')}"`,
+      `"${(p.employee_id || '—').replace(/"/g, '""')}"`,
+      `"${(p.department || 'General').replace(/"/g, '""')}"`,
+      `"${(p.item_name || p.object_type || '—').replace(/"/g, '""')}"`,
+      `"${(p.serial_number || p.object_id || '—').replace(/"/g, '""')}"`,
+      `"${(p.placement_reason || '—').replace(/"/g, '""')}"`,
+      `"${p.state === 'REMOVED' ? 'REMOVED' : 'PLACED'}"`,
+      `"${(p.rfid_uid || '—').replace(/"/g, '""')}"`
+    ]);
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `redtag_placements_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -173,6 +264,17 @@ export default function PlacementsManager({ adminToken }) {
           >
             <RefreshCw size={13} className={isLoading ? 'spin' : ''} />
             <span>Refresh</span>
+          </button>
+
+          <button
+            onClick={exportCSV}
+            disabled={filteredPlacements.length === 0}
+            className="btn btn-outline btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            title="Export filtered placements as CSV"
+          >
+            <Download size={14} />
+            <span>Export CSV Report</span>
           </button>
         </div>
       </div>
@@ -322,21 +424,39 @@ export default function PlacementsManager({ adminToken }) {
                             <span>Details</span>
                           </button>
                           <button
-                            onClick={(e) => handleDeletePlacement(e, p.object_id, p.item_name)}
+                            onClick={(e) => handleDownloadPlacement(e, p)}
                             className="btn btn-outline btn-xs"
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
                               justifyContent: 'center',
                               padding: '5px 7px',
-                              color: '#EF4444',
-                              borderColor: 'rgba(239, 68, 68, 0.35)',
-                              background: 'rgba(239, 68, 68, 0.05)'
+                              color: '#2563EB',
+                              borderColor: 'rgba(37, 99, 235, 0.35)',
+                              background: 'rgba(37, 99, 235, 0.05)'
                             }}
-                            title="Delete placement"
+                            title="Download object details"
                           >
-                            <Trash2 size={13} />
+                            <Download size={13} />
                           </button>
+                          {(userRole || '').toLowerCase() !== 'operator' && (
+                            <button
+                              onClick={(e) => handleDeletePlacement(e, p.object_id, p.item_name)}
+                              className="btn btn-outline btn-xs"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                padding: '5px 7px',
+                                color: '#EF4444',
+                                borderColor: 'rgba(239, 68, 68, 0.35)',
+                                background: 'rgba(239, 68, 68, 0.05)'
+                              }}
+                              title="Delete placement"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -590,20 +710,38 @@ export default function PlacementsManager({ adminToken }) {
               borderBottomLeftRadius: 'var(--radius-lg)',
               borderBottomRightRadius: 'var(--radius-lg)'
             }}>
-              <button
-                onClick={(e) => handleDeletePlacement(e, selectedPlacement.object_id, selectedPlacement.item_name)}
-                className="btn btn-outline btn-sm"
-                style={{
-                  color: '#EF4444',
-                  borderColor: 'rgba(239, 68, 68, 0.4)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}
-              >
-                <Trash2 size={14} />
-                <span>Delete Record</span>
-              </button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={(e) => handleDownloadPlacement(e, selectedPlacement)}
+                  className="btn btn-outline btn-sm"
+                  style={{
+                    color: '#2563EB',
+                    borderColor: 'rgba(37, 99, 235, 0.4)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  <Download size={14} />
+                  <span>Download Details</span>
+                </button>
+                {(userRole || '').toLowerCase() !== 'operator' && (
+                  <button
+                    onClick={(e) => handleDeletePlacement(e, selectedPlacement.object_id, selectedPlacement.item_name)}
+                    className="btn btn-outline btn-sm"
+                    style={{
+                      color: '#EF4444',
+                      borderColor: 'rgba(239, 68, 68, 0.4)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    <span>Delete Record</span>
+                  </button>
+                )}
+              </div>
               <button
                 onClick={() => setSelectedPlacement(null)}
                 className="btn btn-secondary btn-sm"

@@ -1,16 +1,34 @@
-import React, { useState } from 'react';
-import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera, Trash2 } from 'lucide-react';
 
-export default function EventsManager({ events = [], onSelectEvidence }) {
+export default function EventsManager({ events = [], onSelectEvidence, adminToken, userRole = 'admin', socket, onDeleteEvent }) {
+  const [deletedIds, setDeletedIds] = useState(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [authFilter, setAuthFilter] = useState('ALL'); // ALL, AUTHORIZED, UNAUTHORIZED, RFID_MISSING, RFID_INVALID
   const [statusFilter, setStatusFilter] = useState('ALL'); // ALL, OPEN, RESOLVED
   const [dateFilter, setDateFilter] = useState('ALL'); // ALL, TODAY, WEEK
 
+  // Real-time synchronization when any admin deletes an event
+  useEffect(() => {
+    if (!socket) return;
+    const handleEventDeleted = (data) => {
+      const delId = data?.id || data?.eventId;
+      if (delId) {
+        setDeletedIds(prev => new Set(prev).add(delId));
+      }
+    };
+    socket.on('event_deleted', handleEventDeleted);
+    return () => {
+      socket.off('event_deleted', handleEventDeleted);
+    };
+  }, [socket]);
+
   const todayStr = new Date().toISOString().slice(0, 10);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const filteredEvents = events.filter((ev) => {
+    if (deletedIds.has(ev.id)) return false;
+
     // Date filtering
     if (dateFilter === 'TODAY' && (!ev.timestamp || !ev.timestamp.startsWith(todayStr))) return false;
     if (dateFilter === 'WEEK' && (!ev.timestamp || ev.timestamp < sevenDaysAgo)) return false;
@@ -40,6 +58,70 @@ export default function EventsManager({ events = [], onSelectEvidence }) {
     }
     return true;
   });
+
+  const handleDeleteEvent = async (e, eventId) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (!window.confirm('Are you sure you want to delete this event record?')) {
+      return;
+    }
+
+    try {
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token') || '';
+      const res = await fetch(`/api/admin/events/${encodeURIComponent(eventId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (res.ok) {
+        setDeletedIds(prev => new Set(prev).add(eventId));
+        onDeleteEvent?.(eventId);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete event record.');
+      }
+    } catch (err) {
+      console.error('Delete event error:', err);
+      alert('Network error while deleting event record.');
+    }
+  };
+
+  const handleDownloadEvent = (e, ev) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (!ev) return;
+
+    const data = {
+      system: 'RED TAG AREA SURVEILLANCE & RFID MONITOR',
+      export_type: 'EVENT_AUDIT_RECORD',
+      exported_at: new Date().toISOString(),
+      event_id: ev.id,
+      timestamp: ev.timestamp,
+      date_time: ev.timestamp ? new Date(ev.timestamp).toLocaleString() : 'N/A',
+      event_type: ev.event_type === 'RFID_SCAN' ? 'RFID Scan' : 'Object Placement',
+      object_id: ev.object_id || 'N/A',
+      object_type: ev.object_type || 'Placed Object',
+      rfid_uid: ev.rfid_uid || 'Not detected',
+      employee_name: ev.employee_name || 'Unregistered / Unknown',
+      employee_id: ev.employee_id || 'N/A',
+      department: ev.department || 'General',
+      authorization_status: ev.authorization_status || 'UNKNOWN',
+      alert_status: ev.alert_status || (ev.authorization_status === 'AUTHORIZED' ? 'NO_ALERT' : 'ALERT_TRIGGERED'),
+      notes: ev.notes || '',
+      evidence_image: ev.evidence_image || ev.evidenceImage || null
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safeId = (ev.object_id || ev.id || 'event').replace(/[^a-zA-Z0-9_-]/g, '_');
+    link.href = url;
+    link.setAttribute('download', `redtag_event_${safeId}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const exportCSV = () => {
     if (!filteredEvents || filteredEvents.length === 0) return;
@@ -194,13 +276,14 @@ export default function EventsManager({ events = [], onSelectEvidence }) {
                 <th style={{ padding: '10px 14px', fontWeight: 700 }}>Employee</th>
                 <th style={{ padding: '10px 14px', fontWeight: 700 }}>Result</th>
                 <th style={{ padding: '10px 14px', fontWeight: 700 }}>Status</th>
-                <th style={{ padding: '10px 14px', fontWeight: 700, textAlign: 'right' }}>Evidence</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700, textAlign: 'center' }}>Evidence</th>
+                <th style={{ padding: '10px 14px', fontWeight: 700, textAlign: 'right' }}>Action</th>
               </tr>
             </thead>
             <tbody>
               {filteredEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                  <td colSpan={9} style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
                     <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
                       No events found.
                     </div>
@@ -268,7 +351,7 @@ export default function EventsManager({ events = [], onSelectEvidence }) {
                         </span>
                       </td>
 
-                      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                      <td style={{ padding: '10px 14px', textAlign: 'center' }}>
                         {hasEvidence ? (
                           <button
                             onClick={() => onSelectEvidence?.(ev)}
@@ -282,6 +365,46 @@ export default function EventsManager({ events = [], onSelectEvidence }) {
                         ) : (
                           <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>—</span>
                         )}
+                      </td>
+
+                      {/* Action: Download details & Delete button at last */}
+                      <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
+                          <button
+                            onClick={(e) => handleDownloadEvent(e, ev)}
+                            className="btn btn-outline btn-xs"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: '5px 7px',
+                              color: '#2563EB',
+                              borderColor: 'rgba(37, 99, 235, 0.35)',
+                              background: 'rgba(37, 99, 235, 0.05)'
+                            }}
+                            title="Download event details"
+                          >
+                            <Download size={13} />
+                          </button>
+                          {(userRole || '').toLowerCase() !== 'operator' && (
+                            <button
+                              onClick={(e) => handleDeleteEvent(e, ev.id)}
+                              className="btn btn-outline btn-xs"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                padding: '5px 7px',
+                                color: '#EF4444',
+                                borderColor: 'rgba(239, 68, 68, 0.35)',
+                                background: 'rgba(239, 68, 68, 0.05)'
+                              }}
+                              title="Delete event record"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

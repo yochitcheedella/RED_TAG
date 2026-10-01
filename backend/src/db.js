@@ -775,6 +775,16 @@ export function deletePlacement(objectId) {
   return db.prepare('DELETE FROM objects WHERE id = ?').run(objectId);
 }
 
+export function deleteEvent(eventId) {
+  try {
+    db.prepare('DELETE FROM mail_jobs WHERE event_id = ?').run(eventId);
+  } catch (_) {}
+  try {
+    db.prepare('DELETE FROM kiosk_registrations WHERE event_id = ?').run(eventId);
+  } catch (_) {}
+  return db.prepare('DELETE FROM events WHERE id = ?').run(eventId);
+}
+
 export function getEvents(limit = 100) {
   return db.prepare('SELECT * FROM events ORDER BY timestamp DESC LIMIT ?').all(limit);
 }

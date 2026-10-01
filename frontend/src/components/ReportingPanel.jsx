@@ -1,12 +1,20 @@
 import React, { useState } from 'react';
 import { FileSpreadsheet, Archive, Download, CheckCircle2, AlertTriangle, Send, Mail, Calendar } from 'lucide-react';
 
-export default function ReportingPanel({ events = [] }) {
+export default function ReportingPanel({ events = [], adminToken, defaultEmail }) {
   const [dateRange, setDateRange] = useState('ALL'); // 'TODAY', 'WEEK', 'MONTH', 'ALL'
-  const [recipientEmail, setRecipientEmail] = useState('plant-manager@factory.com');
+  const [recipientEmail, setRecipientEmail] = useState(() => defaultEmail || 'yochitcheedella@gmail.com');
   const [isGenerating, setIsGenerating] = useState(false);
   const [reportResult, setReportResult] = useState(null);
   const [emailStatus, setEmailStatus] = useState(null);
+  const [emailFeedback, setEmailFeedback] = useState('');
+
+  // Update recipient email if defaultEmail prop changes and user hasn't typed
+  React.useEffect(() => {
+    if (defaultEmail && recipientEmail === 'yochitcheedella@gmail.com') {
+      setRecipientEmail(defaultEmail);
+    }
+  }, [defaultEmail]);
 
   // Filter events based on date range
   const now = Date.now();
@@ -35,35 +43,69 @@ export default function ReportingPanel({ events = [] }) {
     setIsGenerating(true);
     setReportResult(null);
     try {
-      const res = await fetch('/api/reports/generate', { method: 'POST' });
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+      const res = await fetch('/api/reports/generate', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ limit: 100 })
+      });
       const data = await res.json();
-      setReportResult(data);
+      if (res.ok && data.success) {
+        setReportResult(data);
+      } else {
+        alert(data.error || 'Report generation failed');
+      }
     } catch (err) {
       console.warn('Report generation failed:', err);
+      alert('Report generation failed: ' + err.message);
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handleSendEmail = async () => {
+    const targetEmail = recipientEmail.trim();
+    if (!targetEmail) {
+      alert('Please enter a recipient email address.');
+      return;
+    }
+
     setEmailStatus('sending');
+    setEmailFeedback('');
     try {
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
       const res = await fetch('/api/reports/send-email', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
-          email: recipientEmail,
+          email: targetEmail,
           event: {
             object_type: 'Compliance Audit Report',
-            notes: `Industrial Red Tag Monitoring Report - ${totalPlacements} placements (${authorizationRate} authorized rate).`
+            notes: `Industrial Red Tag Monitoring Report - ${totalPlacements} placements (${authorizationRate} compliance rate). Range: ${dateRange}.`
           }
         })
       });
       const data = await res.json();
-      setEmailStatus(data.success ? 'success' : 'error');
-      setTimeout(() => setEmailStatus(null), 4000);
-    } catch {
+      if (res.ok && data.success) {
+        setEmailStatus('success');
+        setEmailFeedback(`Report successfully dispatched to ${targetEmail}`);
+      } else {
+        setEmailStatus('error');
+        setEmailFeedback(data.error || 'Failed to dispatch report email.');
+      }
+      setTimeout(() => setEmailStatus(null), 6000);
+    } catch (err) {
       setEmailStatus('error');
+      setEmailFeedback('Network error while dispatching email.');
+      setTimeout(() => setEmailStatus(null), 6000);
     }
   };
 
@@ -294,8 +336,42 @@ export default function ReportingPanel({ events = [] }) {
         </div>
 
         {emailStatus === 'success' && (
-          <div style={{ fontSize: '0.75rem', color: 'var(--success)', marginTop: '8px', fontWeight: 600 }}>
-            ✓ Report dispatched to {recipientEmail}
+          <div style={{
+            fontSize: '0.8rem',
+            color: 'var(--success-dark)',
+            background: 'var(--success-bg)',
+            border: '1px solid var(--success-border)',
+            padding: '8px 12px',
+            borderRadius: 'var(--radius-sm)',
+            marginTop: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontWeight: 600,
+            maxWidth: '500px'
+          }}>
+            <CheckCircle2 size={16} color="var(--success)" />
+            <span>{emailFeedback || `✓ Report dispatched to ${recipientEmail}`}</span>
+          </div>
+        )}
+
+        {emailStatus === 'error' && (
+          <div style={{
+            fontSize: '0.8rem',
+            color: 'var(--brand-red-dark)',
+            background: 'var(--brand-red-bg)',
+            border: '1px solid var(--brand-red-border)',
+            padding: '8px 12px',
+            borderRadius: 'var(--radius-sm)',
+            marginTop: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontWeight: 600,
+            maxWidth: '500px'
+          }}>
+            <AlertTriangle size={16} color="var(--brand-red)" />
+            <span>{emailFeedback || 'Failed to dispatch report. Please check recipient email and network.'}</span>
           </div>
         )}
       </div>

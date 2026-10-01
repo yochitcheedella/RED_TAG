@@ -10,7 +10,7 @@ const DURATION_PRESETS = [
   { value: 10080, label: '7 Days' }
 ];
 
-export default function KioskView({ socket, onOpenAdmin, onCaptureCurrentFrame }) {
+export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptureCurrentFrame }) {
   // Kiosk step: 'WAITING_RFID' | 'RFID_VERIFIED' | 'PLACEMENT_ACTIVE' | 'PLACEMENT_COMPLETED'
   const [step, setStep] = useState('WAITING_RFID');
   const [errorMsg, setErrorMsg] = useState(null);
@@ -377,35 +377,71 @@ export default function KioskView({ socket, onOpenAdmin, onCaptureCurrentFrame }
           </span>
         </div>
 
-        {/* Discreet Admin Lock Access */}
-        <button
-          onClick={onOpenAdmin}
-          title="Administrator Login"
-          style={{
-            background: 'rgba(255, 255, 255, 0.04)',
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            color: '#64748B',
-            borderRadius: '8px',
-            padding: '7px 12px',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            fontSize: '0.78rem',
-            transition: 'all 0.2s ease'
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = '#CBD5E1';
-            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = '#64748B';
-            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
-          }}
-        >
-          <Lock size={13} />
-          <span>Admin Portal</span>
-        </button>
+        {/* Portal Access Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Operator Portal Button */}
+          <button
+            onClick={onOpenOperator}
+            title="Operator Portal Login"
+            style={{
+              background: 'rgba(37, 99, 235, 0.1)',
+              border: '1px solid rgba(37, 99, 235, 0.25)',
+              color: '#93C5FD',
+              borderRadius: '8px',
+              padding: '7px 12px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#FFFFFF';
+              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.25)';
+              e.currentTarget.style.borderColor = 'rgba(37, 99, 235, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = '#93C5FD';
+              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.1)';
+              e.currentTarget.style.borderColor = 'rgba(37, 99, 235, 0.25)';
+            }}
+          >
+            <ShieldCheck size={14} color="#60A5FA" />
+            <span>Operator Portal</span>
+          </button>
+
+          {/* Admin Lock Access */}
+          <button
+            onClick={onOpenAdmin}
+            title="Administrator Login"
+            style={{
+              background: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              color: '#94A3B8',
+              borderRadius: '8px',
+              padding: '7px 12px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '0.78rem',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#CBD5E1';
+              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = '#94A3B8';
+              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+            }}
+          >
+            <Lock size={13} />
+            <span>Admin Portal</span>
+          </button>
+        </div>
       </header>
 
       {/* Main Kiosk Content Area */}
