@@ -1,7 +1,7 @@
 import { rfidService } from './rfidService.js';
 import { reportingService } from './reportingService.js';
 import { mailQueueService } from './mailQueueService.js';
-import { logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration, getAnyPendingKioskRegistration, getKioskRegistrationById } from '../db.js';
+import { db, logEvent, getSetting, registerObject, updateObjectState, getActiveObjects, clearAllActiveObjects, getActiveKioskRegistration, completeKioskRegistration, getAnyPendingKioskRegistration, getKioskRegistrationById } from '../db.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -23,52 +23,142 @@ class CorrelationEngine {
     // key -> { objectId, label, box, state: 'PRESENT' | 'REMOVED', isAuthorized, authStatus, employeeId, employeeName, rfidUID, evidenceImage, firstSeen, lastSeen }
     this.registeredObjects = new Map();
     this.pendingKioskCandidate = null;
+    this.loadActiveObjectsFromDb();
+  }
+
+  loadActiveObjectsFromDb() {
+    try {
+      const activeObjs = getActiveObjects();
+      for (const obj of activeObjs) {
+        let box = null;
+        if (obj.bounding_box) {
+          try {
+            box = typeof obj.bounding_box === 'string' ? JSON.parse(obj.bounding_box) : obj.bounding_box;
+          } catch (e) {}
+        }
+        const isAuth = obj.authorization_status === 'AUTHORIZED';
+        const rec = {
+          id: obj.id,
+          objectId: obj.id,
+          event_id: obj.event_id,
+          object_type: obj.object_type,
+          objectType: obj.object_type,
+          item_name: obj.item_name,
+          serial_number: obj.serial_number,
+          description: obj.description,
+          placement_reason: obj.placement_reason,
+          placement_duration_min: obj.placement_duration_min,
+          department: obj.department,
+          registered_at: obj.registered_at,
+          rfid_uid: obj.rfid_uid,
+          employee_id: obj.employee_id,
+          employee_name: obj.employee_name,
+          authorization_status: obj.authorization_status,
+          authStatus: obj.authorization_status,
+          isAuthorized: isAuth,
+          state: obj.state || 'PRESENT',
+          bounding_box: box,
+          box: box,
+          evidence_image: obj.evidence_image,
+          evidenceImage: obj.evidence_image,
+          camera_id: obj.camera_id || 'CAM-01-REDTAG',
+          firstSeen: obj.first_seen ? new Date(obj.first_seen).getTime() : Date.now(),
+          lastSeen: obj.last_seen ? new Date(obj.last_seen).getTime() : Date.now()
+        };
+        this.registeredObjects.set(obj.id, rec);
+      }
+      if (activeObjs.length > 0) {
+        console.log(`📦 [CorrelationEngine] Loaded ${activeObjs.length} active PRESENT objects from database.`);
+      }
+    } catch (err) {
+      console.warn('Could not load active objects from DB:', err.message);
+    }
   }
 
   init(io) {
     this.io = io;
     mailQueueService.setIO(io);
+    this.loadActiveObjectsFromDb();
   }
 
   /**
    * Section 89: Find an existing object that is already tracked in the Red Tag Area
-   * Matches by explicit objectId, trackerKey, spatial IoU (>= 0.15), or spatial center proximity (< 100px)
+   * Matches by explicit objectId, trackerKey, spatial IoU (>= 0.15), or spatial center proximity (< 140px)
    */
   findExistingObject(placementData) {
     const box = placementData.box;
     const candCenterX = box ? (box.x + (box.width || 0) / 2) : null;
     const candCenterY = box ? (box.y + (box.height || 0) / 2) : null;
 
+    // 1. Explicit ID match
     for (const [id, obj] of this.registeredObjects.entries()) {
       if (obj.state !== 'PRESENT') continue;
-
-      // 1. Explicit ID match
       if (placementData.objectId && (obj.objectId === placementData.objectId || id === placementData.objectId)) {
         return obj;
       }
+    }
 
-      // 2. Spatial Overlap & Proximity matching: If an object is already PRESENT at these exact coordinates,
-      // it is the same physical object regardless of client tracker ID regeneration!
-      if (box && obj.box && candCenterX !== null && candCenterY !== null) {
-        const xA = Math.max(box.x, obj.box.x);
-        const yA = Math.max(box.y, obj.box.y);
-        const xB = Math.min(box.x + (box.width || 0), obj.box.x + (obj.box.width || 0));
-        const yB = Math.min(box.y + (box.height || 0), obj.box.y + (obj.box.height || 0));
+    // 2. Spatial Overlap & Proximity matching
+    let bestMatch = null;
+    let highestIou = 0;
+    let closestDist = Infinity;
+
+    for (const [id, obj] of this.registeredObjects.entries()) {
+      if (obj.state !== 'PRESENT') continue;
+
+      let objBox = obj.box;
+      if (!objBox && obj.bounding_box) {
+        try {
+          objBox = typeof obj.bounding_box === 'string' ? JSON.parse(obj.bounding_box) : obj.bounding_box;
+          obj.box = objBox;
+        } catch (e) {}
+      }
+
+      if (box && objBox && candCenterX !== null && candCenterY !== null) {
+        const xA = Math.max(box.x, objBox.x);
+        const yA = Math.max(box.y, objBox.y);
+        const xB = Math.min(box.x + (box.width || 0), objBox.x + (objBox.width || 0));
+        const yB = Math.min(box.y + (box.height || 0), objBox.y + (objBox.height || 0));
         const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
         const boxAArea = (box.width || 0) * (box.height || 0);
-        const boxBArea = (obj.box.width || 0) * (obj.box.height || 0);
+        const boxBArea = (objBox.width || 0) * (objBox.height || 0);
         const unionArea = boxAArea + boxBArea - interArea;
         const iou = unionArea > 0 ? interArea / unionArea : 0;
 
-        const objCenterX = obj.box.x + (obj.box.width || 0) / 2;
-        const objCenterY = obj.box.y + (obj.box.height || 0) / 2;
+        const objCenterX = objBox.x + (objBox.width || 0) / 2;
+        const objCenterY = objBox.y + (objBox.height || 0) / 2;
         const dist = Math.hypot(candCenterX - objCenterX, candCenterY - objCenterY);
 
-        // Strong spatial overlap (IoU >= 0.25) or close proximity (< 65px)
-        if (iou >= 0.25 || dist < 65) {
-          return obj;
+        // Generous spatial match: IoU >= 0.15 or proximity < 140px
+        if (iou >= 0.15 && iou > highestIou) {
+          highestIou = iou;
+          bestMatch = obj;
+        } else if (highestIou === 0 && dist < 140 && dist < closestDist) {
+          closestDist = dist;
+          bestMatch = obj;
         }
       }
+    }
+
+    if (bestMatch) return bestMatch;
+
+    // 3. Fallback: If an authorized object is PRESENT in the Red Tag area but had no initial bounding box
+    // (e.g. from Kiosk placement confirmation where camera coordinates were not yet bound),
+    // and this detected stationary object is inside the polygon:
+    // Bind the detected box to that authorized object!
+    const activeAuthorized = Array.from(this.registeredObjects.values()).filter(o => 
+      o.state === 'PRESENT' && (o.isAuthorized || o.authorization_status === 'AUTHORIZED' || o.authStatus === 'AUTHORIZED')
+    );
+
+    if (activeAuthorized.length === 1 && !activeAuthorized[0].box) {
+      const singleAuth = activeAuthorized[0];
+      singleAuth.box = box;
+      singleAuth.bounding_box = box;
+      try {
+        db.prepare('UPDATE objects SET bounding_box = ? WHERE id = ?').run(JSON.stringify(box), singleAuth.id);
+      } catch (e) {}
+      console.log(`🔗 [CorrelationEngine] Bound physical camera box to existing authorized item "${singleAuth.item_name || singleAuth.objectId}".`);
+      return singleAuth;
     }
 
     return null;
@@ -145,8 +235,16 @@ class CorrelationEngine {
     const existing = this.findExistingObject(placementData);
     if (existing && existing.state === 'PRESENT') {
       existing.lastSeen = now;
-      if (existing.isAuthorized) {
-        console.log(`🛡️ [Section 84] Object ${existing.objectId} (${existing.objectType}) is ALREADY AUTHORIZED and PRESENT.`);
+      if (placementData.box && !existing.box) {
+        existing.box = placementData.box;
+        existing.bounding_box = placementData.box;
+      }
+      const isAuth = !!(existing.isAuthorized || existing.authorization_status === 'AUTHORIZED' || existing.authStatus === 'AUTHORIZED');
+      if (isAuth) {
+        existing.isAuthorized = true;
+        existing.authStatus = 'AUTHORIZED';
+        existing.authorization_status = 'AUTHORIZED';
+        console.log(`🛡️ [Section 84] Object ${existing.objectId} (${existing.objectType || existing.item_name}) is ALREADY AUTHORIZED and PRESENT.`);
         console.log(`🛡️ [Section 85] DO NOT create duplicate placement event. DO NOT generate alert.`);
         console.log('========================================\n');
         return {
@@ -159,8 +257,8 @@ class CorrelationEngine {
           alert_status: 'NO_ALERT',
           object_state: 'PRESENT',
           state: 'PRESENT',
-          objectType: existing.objectType,
-          evidence_image: existing.evidenceImage
+          objectType: existing.objectType || existing.item_name,
+          evidence_image: existing.evidenceImage || existing.evidence_image
         };
       } else {
         // Group J: Duplicate Alert Prevention for already-alerted stationary object
@@ -172,12 +270,12 @@ class CorrelationEngine {
           objectId: existing.objectId,
           object_id: existing.objectId,
           event_type: 'UNAUTHORIZED_PLACEMENT',
-          authorization_status: existing.authStatus,
+          authorization_status: existing.authStatus || 'UNAUTHORIZED',
           alert_status: 'NO_ALERT',
           object_state: 'PRESENT',
           state: 'PRESENT',
-          objectType: existing.objectType,
-          evidence_image: existing.evidenceImage
+          objectType: existing.objectType || existing.item_name,
+          evidence_image: existing.evidenceImage || existing.evidence_image
         };
       }
     }
@@ -503,7 +601,10 @@ class CorrelationEngine {
 
     const now = Date.now();
     const eventId = `EVT-${now}-${uuidv4().slice(0, 4).toUpperCase()}`;
-    const objectId = `TRACK-${String(Math.floor(Math.random() * 900) + 100)}`;
+
+    // Prefer using the candidate objectId and box tracked by CCTV during this session!
+    const targetObjectId = (this.pendingKioskCandidate && this.pendingKioskCandidate.objectId) || `TRACK-${String(Math.floor(Math.random() * 900) + 100)}`;
+    const targetBox = (this.pendingKioskCandidate && this.pendingKioskCandidate.box) || null;
 
     // 1. Evidence image resolution
     let finalEvidenceFilename = null;
@@ -546,9 +647,11 @@ class CorrelationEngine {
     const timeDifference = ((now - new Date(registeredAt).getTime()) / 1000).toFixed(1);
 
     const objectRecord = {
-      id: objectId,
+      id: targetObjectId,
+      objectId: targetObjectId,
       event_id: eventId,
       object_type: objectType || reg.item_name || 'Object',
+      objectType: objectType || reg.item_name || 'Object',
       item_name: finalItemName,
       serial_number: finalSerialNo,
       description: finalDescription,
@@ -559,19 +662,27 @@ class CorrelationEngine {
       employee_name: reg.employee_name,
       department: finalDept,
       authorization_status: 'AUTHORIZED',
+      authStatus: 'AUTHORIZED',
+      isAuthorized: true,
       state: 'PRESENT',
+      box: targetBox,
+      bounding_box: targetBox,
       confidence: 0.95,
       first_seen: new Date(now).toISOString(),
       last_seen: new Date(now).toISOString(),
+      firstSeen: now,
+      lastSeen: now,
       evidence_image: finalEvidenceFilename,
+      evidenceImage: finalEvidenceFilename,
+      camera_id: 'CAM-01-REDTAG',
       notes: `Authorized Kiosk placement: ${finalItemName} confirmed by ${reg.employee_name} (${reg.rfid_uid})`
     };
 
     registerObject(objectRecord);
-    this.registeredObjects.set(objectId, objectRecord);
+    this.registeredObjects.set(targetObjectId, objectRecord);
 
     // Complete the kiosk registration in DB
-    completeKioskRegistration(reg.id, eventId, objectId);
+    completeKioskRegistration(reg.id, eventId, targetObjectId);
 
     // Log the authorized event in DB
     const savedEvent = logEvent({
@@ -582,7 +693,7 @@ class CorrelationEngine {
       employee_id: reg.employee_id,
       employee_name: reg.employee_name,
       object_type: reg.item_name || 'Object',
-      object_id: objectId,
+      object_id: targetObjectId,
       object_state: 'PRESENT',
       authorization_status: 'AUTHORIZED',
       alert_status: 'NO_ALERT',
@@ -604,14 +715,15 @@ class CorrelationEngine {
     rfidService.consumeToken();
     this.pendingKioskCandidate = null;
 
-    console.log(`✅ [Kiosk] Placement confirmed by operator: "${finalItemName}" for ${reg.employee_name} (${reg.rfid_uid})`);
+    console.log(`✅ [Kiosk] Placement confirmed by operator: "${finalItemName}" for ${reg.employee_name} (${reg.rfid_uid}) -> Object: ${targetObjectId}`);
 
     // Emit Socket.IO events to Kiosk & Admin Dashboard
     if (this.io) {
       this.io.emit('kiosk_placement_success', {
         success: true,
         eventId,
-        objectId,
+        objectId: targetObjectId,
+        box: targetBox,
         itemName: finalItemName,
         serialNumber: finalSerialNo,
         employeeName: reg.employee_name,
@@ -622,7 +734,8 @@ class CorrelationEngine {
 
       this.io.emit('placement_authorized', {
         eventId,
-        objectId,
+        objectId: targetObjectId,
+        box: targetBox,
         event: savedEvent,
         employee: reg.employee_name,
         rfid: reg.rfid_uid,
@@ -644,7 +757,7 @@ class CorrelationEngine {
       success: true,
       event: savedEvent,
       eventId: savedEvent.id,
-      objectId,
+      objectId: targetObjectId,
       evidenceImage: finalEvidenceFilename
     };
   }

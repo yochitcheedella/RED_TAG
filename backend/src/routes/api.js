@@ -730,8 +730,8 @@ router.post('/vision/placement-confirmed', async (req, res) => {
   }
 });
 
-// Section 82 & 90: Get currently PRESENT objects in Red Tag Area (Admin Only)
-router.get('/objects/active', requireAdmin, (req, res) => {
+// Section 82 & 90: Get currently PRESENT objects in Red Tag Area
+router.get('/objects/active', (req, res) => {
   try {
     const active = getActiveObjects();
     res.json({ success: true, count: active.length, objects: active });

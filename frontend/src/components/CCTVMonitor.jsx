@@ -14,7 +14,8 @@ export default function CCTVMonitor({
   onCameraStateChange,
   onActivityChange,
   cctvRef,
-  isActive
+  isActive,
+  socket
 }) {
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -91,6 +92,104 @@ export default function CCTVMonitor({
   useEffect(() => { onActivityChangeRef.current = onActivityChange; }, [onActivityChange]);
   useEffect(() => { unauthorizedAlertRef.current = unauthorizedAlert; }, [unauthorizedAlert]);
   useEffect(() => { onUnauthorizedAlertRef.current = onUnauthorizedAlert; }, [onUnauthorizedAlert]);
+
+  // Sync active PRESENT objects from backend on mount
+  useEffect(() => {
+    fetch('/api/objects/active')
+      .then(r => r.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.objects)) {
+          for (const obj of data.objects) {
+            if (obj.state === 'PRESENT' && obj.authorization_status === 'AUTHORIZED') {
+              let box = null;
+              try {
+                box = typeof obj.bounding_box === 'string' ? JSON.parse(obj.bounding_box) : obj.bounding_box;
+              } catch (e) {}
+
+              if (box) {
+                const tr = trackersRef.current.find(t => {
+                  const d = Math.hypot((t.x + t.width / 2) - (box.x + box.width / 2), (t.y + t.height / 2) - (box.y + box.height / 2));
+                  return d < 140;
+                });
+                if (tr) {
+                  tr.authorized = true;
+                  tr.debounced = true;
+                  tr.state = 'PRESENT';
+                  tr.objectId = obj.id;
+                }
+              }
+            }
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Listen to Socket.IO placement authorization events to bind local trackers in real-time
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleAuthorizedPlacement = (data) => {
+      console.log('🛡️ [CCTVMonitor] Received authorized placement event:', data);
+      const authObjId = data.objectId || data.object_id;
+      const authBox = data.box || data.bounding_box;
+
+      let matched = false;
+      for (const tr of trackersRef.current) {
+        const matchesId = authObjId && (tr.objectId === authObjId || tr.id === authObjId);
+        let matchesBox = false;
+        if (authBox && tr.x !== undefined) {
+          const d = Math.hypot((tr.x + tr.width / 2) - (authBox.x + authBox.width / 2), (tr.y + tr.height / 2) - (authBox.y + authBox.height / 2));
+          if (d < 140) matchesBox = true;
+        }
+
+        if (matchesId || matchesBox || (trackersRef.current.length === 1 && tr.inside)) {
+          tr.authorized = true;
+          tr.debounced = true;
+          tr.state = 'PRESENT';
+          if (authObjId) tr.objectId = authObjId;
+          matched = true;
+          break;
+        }
+      }
+
+      if (!matched) {
+        const insideTr = trackersRef.current.find(t => t.inside);
+        if (insideTr) {
+          insideTr.authorized = true;
+          insideTr.debounced = true;
+          insideTr.state = 'PRESENT';
+          if (authObjId) insideTr.objectId = authObjId;
+        }
+      }
+
+      // Clear any unauthorized alert modal
+      onUnauthorizedAlertRef.current?.(null);
+      sounds.playAuthorized();
+    };
+
+    socket.on('kiosk_placement_success', handleAuthorizedPlacement);
+    socket.on('placement_authorized', handleAuthorizedPlacement);
+
+    const handleObjectRemoved = (data) => {
+      if (data?.objectId) {
+        trackersRef.current = trackersRef.current.filter(t => t.objectId !== data.objectId);
+      }
+    };
+    socket.on('object_removed', handleObjectRemoved);
+
+    const handleObjectsCleared = () => {
+      trackersRef.current = [];
+    };
+    socket.on('objects_cleared', handleObjectsCleared);
+
+    return () => {
+      socket.off('kiosk_placement_success', handleAuthorizedPlacement);
+      socket.off('placement_authorized', handleAuthorizedPlacement);
+      socket.off('object_removed', handleObjectRemoved);
+      socket.off('objects_cleared', handleObjectsCleared);
+    };
+  }, [socket]);
 
   // Expose live high-resolution frame/object capture to parent (Kiosk & Admin)
   useEffect(() => {
@@ -1315,7 +1414,7 @@ export default function CCTVMonitor({
       // Unconfirmed or unauthorized items have a 2.5s responsive threshold.
       trackersRef.current = currentTrackers.filter(tr => {
         const timeSinceSeen = now - tr.lastSeen;
-        const pruneThreshold = tr.authorized ? 10000 : 2500;
+        const pruneThreshold = tr.authorized ? 30000 : 8000;
         if (timeSinceSeen >= pruneThreshold) {
           if (tr.debounced) {
             console.log(`[TRACKING] ${tr.objectId} removed after sustained ${timeSinceSeen}ms absence`);
@@ -1423,7 +1522,9 @@ export default function CCTVMonitor({
               token.expires_at &&
               now <= new Date(token.expires_at).getTime()
             );
-            tracker.authorized = isAuthByToken;
+            if (isAuthByToken) {
+              tracker.authorized = true;
+            }
 
             fetch('/api/vision/placement-confirmed', {
               method: 'POST',
@@ -1439,18 +1540,28 @@ export default function CCTVMonitor({
             })
               .then(r => r.json())
               .then(data => {
-                if (data?.event) {
-                  tracker.objectId = data.object_id || data.event.object_id || tracker.objectId;
-                  const isNowAuth = data.event.authorization_status === 'AUTHORIZED';
-                  tracker.authorized = isNowAuth;
-                  tracker.state = data.object_state || 'PRESENT';
+                if (data?.event || data?.alreadyAuthorized || data?.authorization_status) {
+                  tracker.objectId = data.object_id || data.event?.object_id || tracker.objectId;
+                  const isNowAuth = !!(
+                    data.alreadyAuthorized ||
+                    data.event?.alreadyAuthorized ||
+                    data.event?.authorization_status === 'AUTHORIZED' ||
+                    data.authorization_status === 'AUTHORIZED' ||
+                    tracker.authorized
+                  );
+                  if (isNowAuth) {
+                    tracker.authorized = true;
+                  }
+                  tracker.state = data.object_state || data.event?.object_state || 'PRESENT';
 
                   // Suppress duplicate alerts for already-registered stationary objects
-                  if (data.event.alreadyRecorded || data.event.alreadyAuthorized || data.event.alert_status === 'NO_ALERT') {
-                    if (data.event.alreadyRecorded && !isNowAuth) {
-                      tracker.authorized = false;
+                  if (data.alreadyAuthorized || data.event?.alreadyAuthorized || data.event?.alreadyRecorded || data.event?.alert_status === 'NO_ALERT' || data.alert_status === 'NO_ALERT') {
+                    if (isNowAuth) {
+                      tracker.authorized = true;
+                      sounds.playAuthorized();
+                      onUnauthorizedAlertRef.current?.(null);
                     }
-                    console.log(`[TRACKING] Object ${tracker.objectId} already registered (${data.event.authorization_status}).`);
+                    console.log(`[TRACKING] Object ${tracker.objectId} already registered (${data.event?.authorization_status || data.authorization_status || 'AUTHORIZED'}).`);
                     return;
                   }
 
@@ -1460,18 +1571,18 @@ export default function CCTVMonitor({
                   } else {
                     sounds.playUnauthorizedAlert();
                     onUnauthorizedAlertRef.current?.({
-                      eventId: data.event.id,
+                      eventId: data.event?.id || data.eventId || `EVT-${Date.now()}`,
                       objectId: tracker.objectId,
                       event: data.event,
-                      timestamp: data.event.timestamp,
-                      reason: data.event.authorization_status,
-                      rfidStatus: data.event.authorization_status,
-                      employeeStatus: data.event.employee_name ? `${data.event.employee_name} (${data.event.authorization_status})` : 'NOT SCANNED / UNKNOWN',
-                      objectType: data.event.object_type,
-                      confidence: data.event.confidence,
+                      timestamp: data.event?.timestamp || new Date().toISOString(),
+                      reason: data.event?.authorization_status || 'UNAUTHORIZED',
+                      rfidStatus: data.event?.authorization_status || 'UNAUTHORIZED',
+                      employeeStatus: data.event?.employee_name ? `${data.event.employee_name} (${data.event.authorization_status})` : 'NOT SCANNED / UNKNOWN',
+                      objectType: data.event?.object_type || tracker.bestClass,
+                      confidence: data.event?.confidence || tracker.bestScore,
                       area: 'Red Tag Area (Physical Floor Tape Polygon)',
-                      evidenceImage: data.event.evidence_image,
-                      notes: data.event.notes
+                      evidenceImage: data.event?.evidence_image,
+                      notes: data.event?.notes
                     });
                   }
                 }

@@ -498,6 +498,7 @@ export default function App() {
                 onCameraStateChange={setCameraActive}
                 onActivityChange={setCurrentActivity}
                 isActive={viewMode === 'admin' && activeTab === 'monitor'}
+                socket={socket}
               />
             </div>
           </div>
