@@ -74,6 +74,8 @@ export default function CCTVMonitor({
   const floorBaselineRef = useRef(null);
   const baselineFramesCount = useRef(0);
   const detectedPersonsRef = useRef([]);
+  // Tracks whether the user manually disconnected — prevents auto-reconnect loops
+  const userDisconnectedRef = useRef(false);
 
   useEffect(() => { modelRef.current = model; }, [model]);
   useEffect(() => { activeTokenRef.current = activeToken; }, [activeToken]);
@@ -233,6 +235,8 @@ export default function CCTVMonitor({
 
   // Start Camera Stream
   const startCamera = async (devId) => {
+    // Clear manual-disconnect flag whenever startCamera is called intentionally
+    userDisconnectedRef.current = false;
     setCameraError(null);
     const targetDevId = devId || selectedDeviceId;
     try {
@@ -274,6 +278,7 @@ export default function CCTVMonitor({
       }
 
       // Re-populate device list with granted labels
+      // Also auto-switch to Logitech/external if we started on integrated webcam
       navigator.mediaDevices?.enumerateDevices().then(devices => {
         const inputs = devices.filter(d => d.kind === 'videoinput');
         if (inputs.length > 0) {
@@ -284,6 +289,18 @@ export default function CCTVMonitor({
           });
           if (hdPro && !devId) {
             setSelectedDeviceId(hdPro.deviceId);
+            // Auto-switch stream to Logitech if it differs from the active stream's device
+            const activeTrackDevId = stream?.getVideoTracks?.()?.[0]?.getSettings?.()?.deviceId;
+            if (activeTrackDevId && hdPro.deviceId !== activeTrackDevId && !userDisconnectedRef.current) {
+              console.log('🎥 Auto-switching to Logitech/external webcam...');
+              setTimeout(() => {
+                if (!userDisconnectedRef.current) {
+                  try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                  if (videoRef.current) videoRef.current.srcObject = null;
+                  startCamera(hdPro.deviceId);
+                }
+              }, 300);
+            }
           } else if (targetDevId) {
             setSelectedDeviceId(targetDevId);
           } else {
@@ -299,6 +316,8 @@ export default function CCTVMonitor({
   };
 
   const stopCamera = () => {
+    // Mark as user-initiated disconnect to prevent auto-reconnect loop
+    userDisconnectedRef.current = true;
     if (videoRef.current && videoRef.current.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop());
       videoRef.current.srcObject = null;
@@ -316,15 +335,16 @@ export default function CCTVMonitor({
   }, []);
 
   // Ensure camera stream is alive when tab/view becomes active
+  // NOTE: Respect userDisconnectedRef — do NOT auto-reconnect if user manually disconnected
   useEffect(() => {
-    if (isActive !== false) {
+    if (isActive !== false && !userDisconnectedRef.current) {
       if (!cameraActive) {
         startCamera().catch(() => {});
       } else if (videoRef.current && videoRef.current.paused) {
         videoRef.current.play().catch(() => {});
       }
     }
-  }, [isActive, cameraActive]);
+  }, [isActive]);
 
   const handleDeviceChange = (newDeviceId) => {
     setSelectedDeviceId(newDeviceId);
