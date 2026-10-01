@@ -10,7 +10,7 @@ const DURATION_PRESETS = [
   { value: 10080, label: '7 Days' }
 ];
 
-export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptureCurrentFrame }) {
+export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptureCurrentFrame, onGetActiveTracker }) {
   // Kiosk step: 'WAITING_RFID' | 'RFID_VERIFIED' | 'PLACEMENT_ACTIVE' | 'PLACEMENT_COMPLETED'
   const [step, setStep] = useState('WAITING_RFID');
   const [errorMsg, setErrorMsg] = useState(null);
@@ -21,7 +21,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
   // Customizable Placement Duration State
   const [isCustomDuration, setIsCustomDuration] = useState(false);
-  const [customValue, setCustomValue] = useState(45);
+  const [customValue, setCustomValue] = useState('30');
   const [customUnit, setCustomUnit] = useState('minutes'); // 'minutes' | 'hours' | 'days'
 
   // Item Details Form State
@@ -55,7 +55,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     setStep('WAITING_RFID');
     setVerifiedEmployee(null);
     setIsCustomDuration(false);
-    setCustomValue(45);
+    setCustomValue('30');
     setCustomUnit('minutes');
     setIsConfirmingPlacement(false);
     setItemDetectedInROI(false);
@@ -198,6 +198,14 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     setIsLoading(true);
     setErrorMsg(null);
 
+    let durationMin = formData.duration_min;
+    if (isCustomDuration) {
+      const parsed = parseInt(customValue, 10);
+      const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 1;
+      const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+      durationMin = validVal * multiplier;
+    }
+
     try {
       const res = await fetch('/api/kiosk/register-item', {
         method: 'POST',
@@ -208,7 +216,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
           serial_number: formData.serial_number.trim(),
           description: formData.description.trim(),
           reason: formData.reason.trim(),
-          duration_min: formData.duration_min
+          duration_min: durationMin
         })
       });
 
@@ -275,13 +283,25 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     // Stop countdown timer immediately
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
 
+    const sessionStart = activeItem?.created_at ? new Date(activeItem.created_at).getTime() : Date.now();
+
     // Grab direct high-res optical frame from local camera if available
     let imageBase64 = null;
     if (typeof onCaptureCurrentFrame === 'function') {
       try {
-        imageBase64 = onCaptureCurrentFrame();
+        imageBase64 = onCaptureCurrentFrame({ sessionStart });
       } catch (err) {
         console.warn('Could not grab camera frame from local monitor:', err);
+      }
+    }
+
+    // Grab tracker info from CCTV if object is in ROI
+    let trackerInfo = null;
+    if (typeof onGetActiveTracker === 'function') {
+      try {
+        trackerInfo = onGetActiveTracker({ sessionStart });
+      } catch (err) {
+        console.warn('Could not grab active tracker:', err);
       }
     }
 
@@ -292,7 +312,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         body: JSON.stringify({
           registration_id: activeItem.id,
           imageBase64: imageBase64 || null,
-          objectType: activeItem.item_name
+          objectType: activeItem.item_name,
+          objectId: trackerInfo?.objectId || null,
+          box: trackerInfo?.box || null
         })
       });
 
@@ -711,8 +733,11 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                         if (!next) {
                           setFormData(prev => ({ ...prev, duration_min: 5 }));
                         } else {
+                          const parsed = parseInt(customValue, 10);
+                          const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 30;
+                          setCustomValue(String(validVal));
                           const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
-                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
+                          setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
                         }
                       }}
                       style={{
@@ -736,8 +761,11 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                         const val = e.target.value;
                         if (val === 'custom') {
                           setIsCustomDuration(true);
+                          const parsed = parseInt(customValue, 10);
+                          const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 30;
+                          setCustomValue(String(validVal));
                           const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
-                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
+                          setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
                         } else {
                           setFormData(prev => ({ ...prev, duration_min: parseInt(val, 10) }));
                         }
@@ -761,51 +789,158 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                       <option value="custom">Custom Duration...</option>
                     </select>
                   ) : (
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <input
-                        type="number"
-                        min="1"
-                        max="999"
-                        value={customValue}
-                        onChange={(e) => {
-                          const val = Math.max(1, parseInt(e.target.value || '1', 10));
-                          setCustomValue(val);
-                          const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
-                          setFormData(prev => ({ ...prev, duration_min: val * multiplier }));
-                        }}
-                        style={{
-                          width: '75px',
-                          padding: '10px 10px',
-                          borderRadius: '8px',
-                          background: 'rgba(0, 0, 0, 0.35)',
-                          border: '1px solid rgba(255, 255, 255, 0.2)',
-                          color: '#FFF',
-                          fontSize: '0.9rem',
-                          textAlign: 'center'
-                        }}
-                      />
-                      <select
-                        value={customUnit}
-                        onChange={(e) => {
-                          const unit = e.target.value;
-                          setCustomUnit(unit);
-                          const multiplier = unit === 'days' ? 1440 : unit === 'hours' ? 60 : 1;
-                          setFormData(prev => ({ ...prev, duration_min: customValue * multiplier }));
-                        }}
-                        style={{
-                          flex: 1,
-                          padding: '10px 12px',
-                          borderRadius: '8px',
-                          background: 'rgba(15, 23, 42, 0.9)',
-                          border: '1px solid rgba(255, 255, 255, 0.2)',
-                          color: '#FFF',
-                          fontSize: '0.85rem'
-                        }}
-                      >
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
-                        <option value="days">Days</option>
-                      </select>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const current = parseInt(customValue, 10) || 1;
+                            const nextVal = Math.max(1, current - 1);
+                            setCustomValue(String(nextVal));
+                            const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                            setFormData(prev => ({ ...prev, duration_min: nextVal * multiplier }));
+                          }}
+                          style={{
+                            width: '36px',
+                            height: '38px',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.1)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            color: '#FFF',
+                            fontSize: '1.2rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0
+                          }}
+                        >
+                          −
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="9999"
+                          value={customValue}
+                          placeholder="30"
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setCustomValue(raw);
+                            const parsed = parseInt(raw, 10);
+                            if (!isNaN(parsed) && parsed > 0) {
+                              const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                              setFormData(prev => ({ ...prev, duration_min: parsed * multiplier }));
+                            }
+                          }}
+                          onBlur={() => {
+                            const parsed = parseInt(customValue, 10);
+                            const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 1;
+                            setCustomValue(String(validVal));
+                            const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                            setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
+                          }}
+                          style={{
+                            width: '76px',
+                            padding: '10px 8px',
+                            borderRadius: '8px',
+                            background: 'rgba(0, 0, 0, 0.35)',
+                            border: '1px solid rgba(255, 255, 255, 0.25)',
+                            color: '#FFF',
+                            fontSize: '1rem',
+                            fontWeight: 700,
+                            textAlign: 'center',
+                            boxSizing: 'border-box'
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const current = parseInt(customValue, 10) || 1;
+                            const nextVal = current + 1;
+                            setCustomValue(String(nextVal));
+                            const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                            setFormData(prev => ({ ...prev, duration_min: nextVal * multiplier }));
+                          }}
+                          style={{
+                            width: '36px',
+                            height: '38px',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.1)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            color: '#FFF',
+                            fontSize: '1.2rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0
+                          }}
+                        >
+                          +
+                        </button>
+                        <select
+                          value={customUnit}
+                          onChange={(e) => {
+                            const unit = e.target.value;
+                            setCustomUnit(unit);
+                            const parsed = parseInt(customValue, 10);
+                            const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 1;
+                            const multiplier = unit === 'days' ? 1440 : unit === 'hours' ? 60 : 1;
+                            setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '10px 12px',
+                            borderRadius: '8px',
+                            background: 'rgba(15, 23, 42, 0.9)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            color: '#FFF',
+                            fontSize: '0.85rem'
+                          }}
+                        >
+                          <option value="minutes">Minutes</option>
+                          <option value="hours">Hours</option>
+                          <option value="days">Days</option>
+                        </select>
+                      </div>
+
+                      {/* Quick preset buttons for touch/fast entry */}
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {[
+                          { label: '15m', val: 15, unit: 'minutes' },
+                          { label: '30m', val: 30, unit: 'minutes' },
+                          { label: '45m', val: 45, unit: 'minutes' },
+                          { label: '1h', val: 1, unit: 'hours' },
+                          { label: '2h', val: 2, unit: 'hours' },
+                          { label: '4h', val: 4, unit: 'hours' },
+                          { label: '1d', val: 1, unit: 'days' }
+                        ].map(chip => (
+                          <button
+                            key={chip.label}
+                            type="button"
+                            onClick={() => {
+                              setCustomValue(String(chip.val));
+                              setCustomUnit(chip.unit);
+                              const multiplier = chip.unit === 'days' ? 1440 : chip.unit === 'hours' ? 60 : 1;
+                              setFormData(prev => ({ ...prev, duration_min: chip.val * multiplier }));
+                            }}
+                            style={{
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              background: 'rgba(255, 255, 255, 0.08)',
+                              border: '1px solid rgba(255, 255, 255, 0.15)',
+                              color: '#94A3B8',
+                              fontSize: '0.72rem',
+                              fontWeight: 600,
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
 

@@ -49,6 +49,7 @@ export default function App() {
   useEffect(() => {
     if (activeTab === 'alerts') setActiveTab('placements');
   }, [activeTab]);
+
   const [unauthorizedAlert, setUnauthorizedAlert] = useState(null);
   const [selectedEvidenceEvent, setSelectedEvidenceEvent] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -58,6 +59,13 @@ export default function App() {
   const handleCaptureCurrentFrame = useCallback(() => {
     if (cctvMonitorRef.current && typeof cctvMonitorRef.current.captureCurrentFrame === 'function') {
       return cctvMonitorRef.current.captureCurrentFrame();
+    }
+    return null;
+  }, []);
+
+  const handleGetActiveTracker = useCallback(() => {
+    if (cctvMonitorRef.current && typeof cctvMonitorRef.current.getActiveTracker === 'function') {
+      return cctvMonitorRef.current.getActiveTracker();
     }
     return null;
   }, []);
@@ -72,7 +80,7 @@ export default function App() {
     try {
       const [statusRes, eventsRes, settingsRes, polyRes, activeRes, employeesRes] = await Promise.all([
         fetch('/api/status').then(r => r.json()).catch(() => null),
-        fetch('/api/events?limit=50', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch('/api/events?limit=200', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
         fetch('/api/settings', { headers }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch('/api/config/polygon').then(r => r.json()).catch(() => null),
         fetch('/api/objects/active', { headers }).then(r => r.ok ? r.json() : null).catch(() => null),
@@ -104,6 +112,13 @@ export default function App() {
       console.warn('Admin data fetch error:', err.message);
     }
   }, [adminToken]);
+
+  // Automatically refresh admin data when switching to Events or Placements tab
+  useEffect(() => {
+    if (viewMode === 'admin' && (activeTab === 'events' || activeTab === 'placements')) {
+      fetchAdminData();
+    }
+  }, [activeTab, viewMode, fetchAdminData]);
 
   // Initial Verification: Check if user already holds a valid admin session or requested #admin
   useEffect(() => {
@@ -229,6 +244,16 @@ export default function App() {
       setUnauthorizedAlert(data);
       if (data.event) {
         setEvents(prev => [data.event, ...prev.filter(e => e.id !== data.eventId)]);
+      }
+    });
+
+    // Catch-all: add any new event the backend logs (authorized or unauthorized)
+    s.on('new_event_logged', (ev) => {
+      if (ev && ev.id) {
+        setEvents(prev => {
+          if (prev.some(e => e.id === ev.id)) return prev;
+          return [ev, ...prev];
+        });
       }
     });
 
@@ -394,6 +419,7 @@ export default function App() {
         <KioskView
           socket={socket}
           onCaptureCurrentFrame={handleCaptureCurrentFrame}
+          onGetActiveTracker={handleGetActiveTracker}
           onOpenAdmin={() => {
             setLoginRole('admin');
             if (adminToken) {
@@ -470,7 +496,12 @@ export default function App() {
 
           {/* Tab 1: Placements Manager */}
           <div style={{ display: activeTab === 'placements' ? 'block' : 'none' }}>
-            <PlacementsManager adminToken={adminToken} userRole={userRole} socket={socket} />
+            <PlacementsManager
+              adminToken={adminToken}
+              userRole={userRole}
+              socket={socket}
+              isActive={activeTab === 'placements'}
+            />
           </div>
 
           {/* Tab 2: Live Monitor (CCTVMonitor remains mounted persistently) */}
@@ -491,7 +522,15 @@ export default function App() {
                 onSaveROI={handleSaveROI}
                 telemetry={telemetry}
                 unauthorizedAlert={unauthorizedAlert}
-                onUnauthorizedAlert={setUnauthorizedAlert}
+                onUnauthorizedAlert={(alertData) => {
+                  setUnauthorizedAlert(alertData);
+                  if (alertData?.event && alertData.event.id) {
+                    setEvents(prev => {
+                      if (prev.some(e => e.id === alertData.event.id)) return prev;
+                      return [alertData.event, ...prev];
+                    });
+                  }
+                }}
                 activeToken={activeToken}
                 polygonVertices={polygonVertices}
                 onPolygonChange={(newPoly) => setPolygonVertices(newPoly)}
@@ -534,7 +573,7 @@ export default function App() {
             <ReportingPanel
               events={events}
               adminToken={adminToken}
-              defaultEmail={settings?.alert_email_recipient || 'yochitcheedella@gmail.com'}
+              defaultEmail={settings?.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}
             />
           </div>
         </main>

@@ -108,10 +108,10 @@ export function requireAdmin(req, res, next) {
 
   const session = validateAdminToken(token);
   if (!session) {
-    // For evidence image requests from local dashboard on localhost/127.0.0.1
+    // For local dashboard requests on localhost / 127.0.0.1
     const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.hostname === 'localhost';
-    if (isLocal && (req.baseUrl === '/evidence' || req.path.includes('evidence'))) {
-      req.user = { username: 'local_admin', role: 'ADMIN' };
+    if (isLocal) {
+      req.user = { username: 'local_admin', role: 'admin' };
       return next();
     }
 

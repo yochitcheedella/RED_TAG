@@ -26,6 +26,8 @@ export default function CCTVMonitor({
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [fps, setFps] = useState(0);
+  // Track manual dismiss of alarm banner — prevents tracker-based re-show until a new alert fires
+  const [alarmDismissed, setAlarmDismissed] = useState(false);
 
   useEffect(() => {
     onCameraStateChange?.(cameraActive);
@@ -93,37 +95,77 @@ export default function CCTVMonitor({
   useEffect(() => { unauthorizedAlertRef.current = unauthorizedAlert; }, [unauthorizedAlert]);
   useEffect(() => { onUnauthorizedAlertRef.current = onUnauthorizedAlert; }, [onUnauthorizedAlert]);
 
-  // Sync active PRESENT objects from backend on mount
-  useEffect(() => {
+  // Continuous sync of active PRESENT objects from backend
+  const activeAuthorizedListRef = useRef([]);
+
+  const syncActiveAuthorized = useCallback(() => {
     fetch('/api/objects/active')
       .then(r => r.json())
       .then(data => {
         if (data.success && Array.isArray(data.objects)) {
-          for (const obj of data.objects) {
-            if (obj.state === 'PRESENT' && obj.authorization_status === 'AUTHORIZED') {
-              let box = null;
-              try {
-                box = typeof obj.bounding_box === 'string' ? JSON.parse(obj.bounding_box) : obj.bounding_box;
-              } catch (e) {}
+          const authList = data.objects.filter(o => o.state === 'PRESENT' && (o.authorization_status === 'AUTHORIZED' || o.isAuthorized));
+          activeAuthorizedListRef.current = authList;
 
-              if (box) {
-                const tr = trackersRef.current.find(t => {
-                  const d = Math.hypot((t.x + t.width / 2) - (box.x + box.width / 2), (t.y + t.height / 2) - (box.y + box.height / 2));
-                  return d < 140;
-                });
-                if (tr) {
-                  tr.authorized = true;
-                  tr.debounced = true;
-                  tr.state = 'PRESENT';
-                  tr.objectId = obj.id;
+          // Re-bind any existing trackers inside polygon to known authorized objects (1-to-1 matching only)
+          const matchedTrackerIds = new Set();
+          for (const obj of authList) {
+            let box = null;
+            try {
+              box = typeof obj.bounding_box === 'string' ? JSON.parse(obj.bounding_box) : obj.bounding_box;
+            } catch (e) {}
+            if (!box) continue; // Require valid bounding box to re-bind
+
+            let bestTr = null;
+            let bestDist = 35; // Strict tolerance: must be within 35px or have IoU >= 0.25
+
+            for (const tr of trackersRef.current) {
+              if (!tr.inside || matchedTrackerIds.has(tr.id)) continue;
+              if (tr.objectId === obj.id || tr.id === obj.id) {
+                bestTr = tr;
+                break;
+              }
+              if (tr.x !== undefined) {
+                const trCenterX = tr.x + tr.width / 2;
+                const trCenterY = tr.y + tr.height / 2;
+                const boxCenterX = box.x + box.width / 2;
+                const boxCenterY = box.y + box.height / 2;
+                const d = Math.hypot(trCenterX - boxCenterX, trCenterY - boxCenterY);
+
+                // Compute IoU
+                const xA = Math.max(tr.x, box.x);
+                const yA = Math.max(tr.y, box.y);
+                const xB = Math.min(tr.x + tr.width, box.x + box.width);
+                const yB = Math.min(tr.y + tr.height, box.y + box.height);
+                const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+                const unionArea = (tr.width * tr.height) + (box.width * box.height) - interArea;
+                const iou = unionArea > 0 ? interArea / unionArea : 0;
+
+                if (iou >= 0.25 || d < bestDist) {
+                  bestDist = d;
+                  bestTr = tr;
                 }
               }
+            }
+
+            if (bestTr) {
+              matchedTrackerIds.add(bestTr.id);
+              bestTr.authorized = true;
+              bestTr.debounced = true;
+              bestTr.state = 'PRESENT';
+              bestTr.objectId = obj.id;
+              onUnauthorizedAlertRef.current?.(null);
             }
           }
         }
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    syncActiveAuthorized();
+    const interval = setInterval(syncActiveAuthorized, 3000);
+    return () => clearInterval(interval);
+  }, [syncActiveAuthorized]);
 
   // Listen to Socket.IO placement authorization events to bind local trackers in real-time
   useEffect(() => {
@@ -171,6 +213,12 @@ export default function CCTVMonitor({
     socket.on('kiosk_placement_success', handleAuthorizedPlacement);
     socket.on('placement_authorized', handleAuthorizedPlacement);
 
+    // Reset dismiss state when a NEW unauthorized alert fires, so banner re-appears
+    const handleNewUnauthorized = () => {
+      setAlarmDismissed(false);
+    };
+    socket.on('placement_unauthorized_alert', handleNewUnauthorized);
+
     const handleObjectRemoved = (data) => {
       if (data?.objectId) {
         trackersRef.current = trackersRef.current.filter(t => t.objectId !== data.objectId);
@@ -186,21 +234,48 @@ export default function CCTVMonitor({
     return () => {
       socket.off('kiosk_placement_success', handleAuthorizedPlacement);
       socket.off('placement_authorized', handleAuthorizedPlacement);
+      socket.off('placement_unauthorized_alert', handleNewUnauthorized);
       socket.off('object_removed', handleObjectRemoved);
       socket.off('objects_cleared', handleObjectsCleared);
     };
   }, [socket]);
 
+  // Helper: Identify the newly placed candidate tracker (NOT an already authorized pre-existing item)
+  const findNewCandidateTracker = (options = {}) => {
+    const sessionStart = options.sessionStart || 0;
+    const insideTrackers = (trackersRef.current || []).filter(t => t.inside);
+    if (insideTrackers.length === 0) return null;
+
+    // 1. Unconfirmed candidate currently undergoing placement confirmation
+    const unconfirmed = insideTrackers.filter(t => !t.authorized || t.state === 'PLACEMENT_CONFIRMING');
+    if (unconfirmed.length > 0) {
+      unconfirmed.sort((a, b) => (b.firstSeen || 0) - (a.firstSeen || 0));
+      return unconfirmed[0];
+    }
+
+    // 2. Tracker that first appeared during or after this kiosk session started
+    if (sessionStart > 0) {
+      const sessionTrackers = insideTrackers.filter(t => (t.firstSeen || 0) >= sessionStart - 3000);
+      if (sessionTrackers.length > 0) {
+        sessionTrackers.sort((a, b) => (b.firstSeen || 0) - (a.firstSeen || 0));
+        return sessionTrackers[0];
+      }
+    }
+
+    // If all trackers were already authorized prior to this session, return null to avoid stealing old objects
+    return null;
+  };
+
   // Expose live high-resolution frame/object capture to parent (Kiosk & Admin)
   useEffect(() => {
     if (cctvRef) {
       cctvRef.current = {
-        captureCurrentFrame: () => {
+        captureCurrentFrame: (options = {}) => {
           try {
             const video = videoRef.current;
             if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
-            // 1. If an active tracker is inside ROI, crop it with generous padding
-            const activeTracker = (trackersRef.current || []).find(t => t.inside) || (trackersRef.current || [])[0];
+            // 1. If a new candidate tracker is inside ROI, crop it with generous padding
+            const activeTracker = findNewCandidateTracker(options);
             if (activeTracker) {
               const crop = cropTargetObjectOnly(video, activeTracker, 50);
               if (crop?.dataUrl) return crop.dataUrl;
@@ -232,6 +307,24 @@ export default function CCTVMonitor({
             return canvas.toDataURL('image/jpeg', 0.95);
           } catch (err) {
             console.warn('captureCurrentFrame error:', err);
+            return null;
+          }
+        },
+        getActiveTracker: (options = {}) => {
+          try {
+            const activeTracker = findNewCandidateTracker(options);
+            if (!activeTracker) return null;
+            return {
+              objectId: activeTracker.objectId,
+              box: {
+                x: activeTracker.x,
+                y: activeTracker.y,
+                width: activeTracker.width,
+                height: activeTracker.height
+              },
+              label: activeTracker.bestClass
+            };
+          } catch (_) {
             return null;
           }
         }
@@ -1281,9 +1374,9 @@ export default function CCTVMonitor({
 
           const d = Math.hypot(cand.centerX - tr.centerX, cand.centerY - tr.centerY);
 
-          // For already confirmed/debounced objects, use generous spatial match
-          const iouThresh = tr.debounced ? 0.15 : 0.25;
-          const distThresh = tr.debounced ? 90 : 75;
+          // For already confirmed/debounced objects, use generous spatial match to avoid ID jitter
+          const iouThresh = tr.debounced ? 0.10 : 0.20;
+          const distThresh = tr.debounced ? 120 : 80;
 
           if (iou >= iouThresh && iou > highestIou) {
             highestIou = iou;
@@ -1363,9 +1456,47 @@ export default function CCTVMonitor({
           const formattedId = `TRACK-${String(newId).padStart(3, '0')}`;
           matchedTrackerIds.add(newId);
 
+          // Check if this location matches an existing authorized item known to be PRESENT
+          let isKnownAuth = false;
+          let matchedAuthId = formattedId;
+          const authList = activeAuthorizedListRef.current || [];
+          const activeAssignedIds = new Set(
+            currentTrackers.filter(t => t.authorized).map(t => t.objectId)
+          );
+
+          for (const authObj of authList) {
+            const authId = authObj.id || authObj.objectId;
+            if (activeAssignedIds.has(authId)) continue;
+
+            let authBox = authObj.box || authObj.bounding_box;
+            if (typeof authBox === 'string') {
+              try { authBox = JSON.parse(authBox); } catch (_) {}
+            }
+            if (authBox) {
+              const authCenterX = authBox.x + (authBox.width || 0) / 2;
+              const authCenterY = authBox.y + (authBox.height || 0) / 2;
+              const d = Math.hypot(cand.centerX - authCenterX, cand.centerY - authCenterY);
+
+              const xA = Math.max(cand.x, authBox.x);
+              const yA = Math.max(cand.y, authBox.y);
+              const xB = Math.min(cand.x + cand.width, authBox.x + authBox.width);
+              const yB = Math.min(cand.y + cand.height, authBox.y + authBox.height);
+              const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+              const unionArea = (cand.width * cand.height) + (authBox.width * authBox.height) - interArea;
+              const iou = unionArea > 0 ? interArea / unionArea : 0;
+
+              // Strictly match only if at the exact same physical coordinates (IoU >= 0.25 or d < 35px)
+              if (iou >= 0.25 || d < 35) {
+                isKnownAuth = true;
+                matchedAuthId = authId;
+                break;
+              }
+            }
+          }
+
           const newTracker = {
             id: newId,
-            objectId: formattedId,
+            objectId: isKnownAuth ? matchedAuthId : formattedId,
             x: cand.x,
             y: cand.y,
             width: cand.width,
@@ -1379,13 +1510,13 @@ export default function CCTVMonitor({
             firstSeen: now,
             stationaryStart: now,
             lastSeen: now,
-            debounced: false,
-            authorized: false,
+            debounced: isKnownAuth,
+            authorized: isKnownAuth,
             isMoving: false,
             rawBox: cand.rawBox,
             candidateFrames: [],
             lastCandidateTime: 0,
-            state: 'PLACEMENT_CONFIRMING'
+            state: isKnownAuth ? 'PRESENT' : 'PLACEMENT_CONFIRMING'
           };
 
           // Capture initial candidate frame
@@ -1409,14 +1540,24 @@ export default function CCTVMonitor({
       }
 
       // Section 22: Prune trackers.
-      // Objects absent for sustained duration are declared REMOVED from the Red Tag Area.
-      // Already-authorized items have a 10s grace period so hand occlusion while placing another item does NOT drop them.
-      // Unconfirmed or unauthorized items have a 2.5s responsive threshold.
+      // Active objects stay tracked continuously as long as they are physically present.
+      // Stale / absent trackers prune quickly (4s for authorized, 2.5s for unconfirmed).
+      const seenObjectIds = new Set();
       trackersRef.current = currentTrackers.filter(tr => {
+        // Enforce strictly one active tracker per objectId
+        if (tr.objectId) {
+          if (seenObjectIds.has(tr.objectId)) return false;
+          seenObjectIds.add(tr.objectId);
+        }
+
         const timeSinceSeen = now - tr.lastSeen;
-        const pruneThreshold = tr.authorized ? 30000 : 8000;
+        // Confirmed stationary objects (authorized or debounced) persist through typical camera/model drops.
+        // Prune only after sustained 15s absence. Transient noise prunes after 4s.
+        const pruneThreshold = tr.debounced ? 15000 : 4000;
         if (timeSinceSeen >= pruneThreshold) {
-          if (tr.debounced) {
+          // STRICT RULE: NEVER notify backend of removal for an AUTHORIZED placement!
+          // Only unauthorized/transient objects trigger automated absence cleanup.
+          if (tr.debounced && !tr.authorized) {
             console.log(`[TRACKING] ${tr.objectId} removed after sustained ${timeSinceSeen}ms absence`);
             fetch('/api/vision/object-removed', {
               method: 'POST',
@@ -1775,21 +1916,6 @@ export default function CCTVMonitor({
               const sec = ((stationaryDuration || 0) / 1000).toFixed(1);
               ctx.fillText(`Confirmation: ${sec} / 5.0s`, ringCenterX - 60, ringCenterY + 38);
             }
-          } else if (inside && debounced) {
-            // Section 33: Confirmed object permanent status banner
-            if (isAuthorized) {
-              ctx.fillStyle = '#059669';
-              ctx.fillRect(footprint.x - 75, footprint.y - 32, 150, 20);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = '700 9px JetBrains Mono, monospace';
-              ctx.fillText(`● ${tracker.objectId}: AUTHORIZED`, footprint.x - 70, footprint.y - 18);
-            } else {
-              ctx.fillStyle = '#dc2626';
-              ctx.fillRect(footprint.x - 75, footprint.y - 32, 150, 20);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = '700 9px JetBrains Mono, monospace';
-              ctx.fillText(`● ${tracker.objectId}: UNAUTHORIZED`, footprint.x - 70, footprint.y - 18);
-            }
           }
 
           ctx.restore();
@@ -2145,7 +2271,7 @@ export default function CCTVMonitor({
       )}
 
       {/* Real-Time Alarm Banner */}
-      {(unauthorizedAlert || trackersRef.current.some(t => t.inside && t.debounced && !t.authorized)) && (
+      {!alarmDismissed && (unauthorizedAlert || trackersRef.current.some(t => t.inside && t.debounced && !t.authorized)) && (
         <div className="animate-alarm" style={{
           padding: '12px 18px',
           borderRadius: '8px',
@@ -2167,7 +2293,10 @@ export default function CCTVMonitor({
             </div>
           </div>
           <button
-            onClick={() => onUnauthorizedAlertRef.current?.(null)}
+            onClick={() => {
+              setAlarmDismissed(true);
+              onUnauthorizedAlertRef.current?.(null);
+            }}
             style={{
               background: 'rgba(239, 68, 68, 0.2)',
               border: '1px solid #ef4444',

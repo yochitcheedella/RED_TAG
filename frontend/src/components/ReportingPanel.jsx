@@ -3,18 +3,13 @@ import { FileSpreadsheet, Archive, Download, CheckCircle2, AlertTriangle, Send, 
 
 export default function ReportingPanel({ events = [], adminToken, defaultEmail }) {
   const [dateRange, setDateRange] = useState('ALL'); // 'TODAY', 'WEEK', 'MONTH', 'ALL'
-  const [recipientEmail, setRecipientEmail] = useState(() => defaultEmail || 'yochitcheedella@gmail.com');
+  const [recipientEmail, setRecipientEmail] = useState(() => {
+    return localStorage.getItem('redtag_report_recipient') || '';
+  });
   const [isGenerating, setIsGenerating] = useState(false);
   const [reportResult, setReportResult] = useState(null);
   const [emailStatus, setEmailStatus] = useState(null);
   const [emailFeedback, setEmailFeedback] = useState('');
-
-  // Update recipient email if defaultEmail prop changes and user hasn't typed
-  React.useEffect(() => {
-    if (defaultEmail && recipientEmail === 'yochitcheedella@gmail.com') {
-      setRecipientEmail(defaultEmail);
-    }
-  }, [defaultEmail]);
 
   // Filter events based on date range
   const now = Date.now();
@@ -74,6 +69,7 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
       return;
     }
 
+    localStorage.setItem('redtag_report_recipient', targetEmail);
     setEmailStatus('sending');
     setEmailFeedback('');
     try {
@@ -96,16 +92,16 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
       const data = await res.json();
       if (res.ok && data.success) {
         setEmailStatus('success');
-        setEmailFeedback(`Report successfully dispatched to ${targetEmail}`);
+        setEmailFeedback(`✓ Report successfully dispatched to ${data.recipient || targetEmail}`);
       } else {
         setEmailStatus('error');
         setEmailFeedback(data.error || 'Failed to dispatch report email.');
       }
-      setTimeout(() => setEmailStatus(null), 6000);
+      setTimeout(() => setEmailStatus(null), 10000);
     } catch (err) {
       setEmailStatus('error');
-      setEmailFeedback('Network error while dispatching email.');
-      setTimeout(() => setEmailStatus(null), 6000);
+      setEmailFeedback('Network error while dispatching email: ' + err.message);
+      setTimeout(() => setEmailStatus(null), 10000);
     }
   };
 
@@ -318,11 +314,12 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
           Transmit compliance status report to industrial operations management
         </p>
 
-        <div style={{ display: 'flex', gap: '8px', maxWidth: '500px' }}>
+        <div style={{ display: 'flex', gap: '8px', maxWidth: '560px' }}>
           <input
-            type="email"
+            type="text"
             value={recipientEmail}
             onChange={(e) => setRecipientEmail(e.target.value)}
+            placeholder="Enter recipient email (e.g. nishapanneerv@gmail.com)"
             style={{ flex: 1 }}
           />
           <button
@@ -331,9 +328,12 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
             className="btn btn-outline btn-sm"
           >
             <Mail size={14} />
-            <span>{emailStatus === 'sending' ? 'Sending...' : 'Send Report'}</span>
+            <span>{emailStatus === 'sending' ? 'Sending Report...' : 'Send Report'}</span>
           </button>
         </div>
+        <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '6px 0 0' }}>
+          Dispatches the Excel compliance audit report directly to the email address entered above.
+        </p>
 
         {emailStatus === 'success' && (
           <div style={{

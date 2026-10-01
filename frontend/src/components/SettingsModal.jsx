@@ -24,7 +24,7 @@ export default function SettingsModal({
     baud_rate: '9600',
     capture_authorized_evidence: 'true',
     alert_auto_dismiss: 'false',
-    alert_email_recipient: 'yochitcheedella@gmail.com'
+    alert_email_recipient: 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'
   });
 
   const [availablePorts, setAvailablePorts] = useState([]);
@@ -45,7 +45,7 @@ export default function SettingsModal({
         baud_rate: String(settings.baud_rate || '9600'),
         capture_authorized_evidence: String(settings.capture_authorized_evidence ?? 'true'),
         alert_auto_dismiss: String(settings.alert_auto_dismiss ?? 'false'),
-        alert_email_recipient: settings.alert_email_recipient || 'yochitcheedella@gmail.com'
+        alert_email_recipient: settings.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'
       });
     }
     fetchSerialPorts();
@@ -516,10 +516,10 @@ export default function SettingsModal({
 
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                       <input
-                        type="email"
+                        type="text"
                         value={formData.alert_email_recipient}
                         onChange={(e) => set('alert_email_recipient', e.target.value)}
-                        placeholder="yochitcheedella@gmail.com"
+                        placeholder="yochitcheedella@gmail.com, nishapanneerv@gmail.com"
                         style={{
                           flex: 1,
                           fontSize: '0.8125rem',
@@ -588,7 +588,7 @@ export default function SettingsModal({
                       padding: '8px 10px',
                       borderRadius: 'var(--radius-xs)'
                     }}>
-                      💡 <strong>Automated Delivery:</strong> Recipient set to <code>{formData.alert_email_recipient || 'yochitcheedella@gmail.com'}</code>. To connect live Gmail SMTP, set <code>SMTP_USER</code> and <code>SMTP_PASS</code> (App Password) in <code>backend/.env</code>.
+                      💡 <strong>Automated Delivery:</strong> Recipient set to <code>{formData.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}</code>. To connect live Gmail SMTP, set <code>SMTP_USER</code> and <code>SMTP_PASS</code> (App Password) in <code>backend/.env</code>.
                     </div>
                   </div>
                 </div>

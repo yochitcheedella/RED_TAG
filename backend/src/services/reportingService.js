@@ -63,7 +63,7 @@ class ReportingService {
       }
     } else {
       this.transporter = null;
-      console.log(`ℹ️ [ReportingService] Email alerts target: ${process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com'}`);
+      console.log(`ℹ️ [ReportingService] Email alerts target: ${process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}`);
     }
   }
 
@@ -257,17 +257,31 @@ class ReportingService {
   /**
    * Sends Nodemailer email with attached compliance ZIP archive
    */
-  async sendEmailAlert(eventData, zipFilePath, recipientEmail = 'plant-manager@factory.com') {
+  async sendEmailAlert(eventData, zipFilePath, recipientEmail = 'plant-manager@factory.com', excelFilePath = null) {
     const recipient = (recipientEmail && recipientEmail.trim()) ||
       process.env.ALERT_EMAIL_RECIPIENT ||
-      'yochitcheedella@gmail.com';
+      'yochitcheedella@gmail.com, nishapanneerv@gmail.com';
 
     console.log(`✉️ [Email Dispatch] Sending incident audit bundle to: ${recipient}`);
+
+    const attachments = [];
+    if (excelFilePath && fs.existsSync(excelFilePath)) {
+      attachments.push({
+        filename: path.basename(excelFilePath),
+        path: excelFilePath
+      });
+    }
+    if (zipFilePath && fs.existsSync(zipFilePath)) {
+      attachments.push({
+        filename: path.basename(zipFilePath),
+        path: zipFilePath
+      });
+    }
 
     const mailOptions = {
       from: `"Red Tag Monitoring System" <${process.env.SMTP_USER || 'alerts@redtag-security.local'}>`,
       to: recipient,
-      subject: `🚨 Red Tag Area Incident & Compliance Audit Report`,
+      subject: `Red Tag Area Incident & Compliance Audit Report`,
       text: `Industrial Red Tag Area Monitoring & Compliance Report.\n\nSummary:\nTopic: ${eventData.object_type || 'Compliance Audit Report'}\nTime: ${new Date().toLocaleString()}\nDetails: ${eventData.notes || 'Routine compliance audit and incident log dispatch.'}\n\nPlease find the attached Excel report and compliance ZIP archive.`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; background: #f8fafc; color: #1e293b;">
@@ -295,7 +309,7 @@ class ReportingService {
                 </tr>
               </table>
               <div style="background: #f1f5f9; padding: 12px 16px; border-radius: 6px; font-size: 12px; color: #475569; border: 1px solid #e2e8f0;">
-                📎 <strong>Attachments Included:</strong> Formatted Excel audit workbook and cropped forensic evidence images (${zipFilePath ? path.basename(zipFilePath) : 'ZIP Bundle'}).
+                📎 <strong>Attachments Included:</strong> Formatted Excel audit workbook (.xlsx) and forensic incident archive (${zipFilePath ? path.basename(zipFilePath) : 'ZIP Bundle'}).
               </div>
             </div>
             <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 12px 24px; font-size: 11px; color: #94a3b8; text-align: center;">
@@ -304,10 +318,7 @@ class ReportingService {
           </div>
         </div>
       `,
-      attachments: zipFilePath && fs.existsSync(zipFilePath) ? [{
-        filename: path.basename(zipFilePath),
-        path: zipFilePath
-      }] : []
+      attachments
     };
 
     const mailer = this.getMailer();
@@ -343,7 +354,7 @@ class ReportingService {
       } catch (_) {}
     }
     if (!recipientEmail) {
-      recipientEmail = process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com';
+      recipientEmail = process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com';
     }
 
     const eventId = eventData.id || eventData.eventId || `EVT-${Date.now()}`;

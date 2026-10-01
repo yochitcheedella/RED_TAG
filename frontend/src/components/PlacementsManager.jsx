@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera, Trash2, Download } from 'lucide-react';
 
-export default function PlacementsManager({ adminToken, userRole = 'admin', socket }) {
+export default function PlacementsManager({ adminToken, userRole = 'admin', socket, isActive = false }) {
   const [placements, setPlacements] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [selectedPlacement, setSelectedPlacement] = useState(null);
 
-  // Real-time synchronization when any admin deletes a placement
+  // Real-time synchronization when placements change or are deleted
   useEffect(() => {
     if (!socket) return;
     const handlePlacementDeleted = (data) => {
@@ -17,11 +17,31 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
         setSelectedPlacement(curr => (curr?.object_id === delId || curr?.id === delId ? null : curr));
       }
     };
+
+    const handlePlacementUpdate = () => {
+      fetchPlacements();
+    };
+
     socket.on('placement_deleted', handlePlacementDeleted);
+    socket.on('kiosk_placement_success', handlePlacementUpdate);
+    socket.on('placement_authorized', handlePlacementUpdate);
+    socket.on('object_registered', handlePlacementUpdate);
+    socket.on('new_event_logged', handlePlacementUpdate);
+
     return () => {
       socket.off('placement_deleted', handlePlacementDeleted);
+      socket.off('kiosk_placement_success', handlePlacementUpdate);
+      socket.off('placement_authorized', handlePlacementUpdate);
+      socket.off('object_registered', handlePlacementUpdate);
+      socket.off('new_event_logged', handlePlacementUpdate);
     };
-  }, [socket]);
+  }, [socket, adminToken]);
+
+  useEffect(() => {
+    if (isActive) {
+      fetchPlacements();
+    }
+  }, [isActive]);
 
   const fetchPlacements = async () => {
     setIsLoading(true);

@@ -199,7 +199,7 @@ const defaultSettings = {
   baud_rate: '9600',
   camera_mode: 'webcam',
   capture_authorized_evidence: 'true',
-  alert_email_recipient: 'yochitcheedella@gmail.com',
+  alert_email_recipient: 'yochitcheedella@gmail.com, nishapanneerv@gmail.com',
   admin_username: 'admin',
   admin_password: 'admin123'
 };
@@ -572,7 +572,9 @@ export function registerObject(obj) {
       employee_name = excluded.employee_name,
       authorization_status = excluded.authorization_status,
       state = excluded.state,
+      first_seen = excluded.first_seen,
       last_seen = excluded.last_seen,
+      removed_at = NULL,
       bounding_box = excluded.bounding_box,
       evidence_image = excluded.evidence_image,
       item_name = COALESCE(excluded.item_name, objects.item_name),
@@ -704,8 +706,8 @@ export function getPlacements(limit = 100) {
       o.placement_reason,
       o.placement_duration_min,
       COALESCE(o.department, (SELECT department FROM employees WHERE UPPER(employees.rfid_uid) = UPPER(o.rfid_uid) LIMIT 1), 'General') as department,
-      o.registered_at,
-      o.first_seen as placed_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as registered_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as placed_at,
       o.last_seen,
       o.state,
       o.authorization_status,
@@ -718,7 +720,7 @@ export function getPlacements(limit = 100) {
     WHERE o.authorization_status = 'AUTHORIZED'
       AND o.employee_name IS NOT NULL
       AND o.employee_name != 'Unidentified'
-    ORDER BY o.first_seen DESC
+    ORDER BY COALESCE(o.registered_at, o.last_seen, o.first_seen) DESC, o.rowid DESC
     LIMIT ?
   `).all(limit);
 }

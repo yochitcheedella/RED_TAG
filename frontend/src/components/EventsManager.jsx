@@ -1,38 +1,116 @@
-import React, { useState, useEffect } from 'react';
-import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera, Trash2, RefreshCw } from 'lucide-react';
 
 export default function EventsManager({ events = [], onSelectEvidence, adminToken, userRole = 'admin', socket, onDeleteEvent, onClearEvents }) {
+  const [localEvents, setLocalEvents] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [deletedIds, setDeletedIds] = useState(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [authFilter, setAuthFilter] = useState('ALL'); // ALL, AUTHORIZED, UNAUTHORIZED, RFID_MISSING, RFID_INVALID
   const [statusFilter, setStatusFilter] = useState('ALL'); // ALL, OPEN, RESOLVED
   const [dateFilter, setDateFilter] = useState('ALL'); // ALL, TODAY, WEEK
 
-  // Real-time synchronization when any admin deletes an event
+  // Direct fetch from backend to ensure events are never stale
+  const fetchEvents = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token') || '';
+      const res = await fetch('/api/events?limit=200', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setLocalEvents(data);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load events:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [adminToken]);
+
+  // Fetch on mount and when token updates
+  useEffect(() => {
+    fetchEvents();
+  }, [fetchEvents]);
+
+  // Real-time synchronization for events
   useEffect(() => {
     if (!socket) return;
+
     const handleEventDeleted = (data) => {
       const delId = data?.id || data?.eventId;
       if (delId) {
         setDeletedIds(prev => new Set(prev).add(delId));
       }
     };
+
     const handleEventsCleared = () => {
       setDeletedIds(new Set());
+      setLocalEvents([]);
       onClearEvents?.();
     };
+
+    const handleNewEvent = (ev) => {
+      if (ev && ev.id) {
+        setLocalEvents(prev => {
+          if (prev.some(e => e.id === ev.id)) return prev;
+          return [ev, ...prev];
+        });
+      }
+    };
+
+    const handleUnauthorizedAlert = (data) => {
+      if (data?.event && data.event.id) {
+        setLocalEvents(prev => {
+          if (prev.some(e => e.id === data.event.id)) return prev;
+          return [data.event, ...prev];
+        });
+      }
+    };
+
+    const handleAuthorizedPlacement = (data) => {
+      if (data?.event && data.event.id) {
+        setLocalEvents(prev => {
+          if (prev.some(e => e.id === data.event.id)) return prev;
+          return [data.event, ...prev];
+        });
+      }
+    };
+
     socket.on('event_deleted', handleEventDeleted);
     socket.on('events_cleared', handleEventsCleared);
+    socket.on('new_event_logged', handleNewEvent);
+    socket.on('placement_unauthorized_alert', handleUnauthorizedAlert);
+    socket.on('placement_authorized', handleAuthorizedPlacement);
+
     return () => {
       socket.off('event_deleted', handleEventDeleted);
       socket.off('events_cleared', handleEventsCleared);
+      socket.off('new_event_logged', handleNewEvent);
+      socket.off('placement_unauthorized_alert', handleUnauthorizedAlert);
+      socket.off('placement_authorized', handleAuthorizedPlacement);
     };
   }, [socket, onClearEvents]);
+
+  // Seamless merge of prop events and local fetched events
+  const combinedEvents = useMemo(() => {
+    const map = new Map();
+    for (const ev of localEvents) {
+      if (ev && ev.id) map.set(ev.id, ev);
+    }
+    for (const ev of events) {
+      if (ev && ev.id) map.set(ev.id, ev);
+    }
+    return Array.from(map.values()).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+  }, [events, localEvents]);
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  const filteredEvents = events.filter((ev) => {
+  const filteredEvents = combinedEvents.filter((ev) => {
     if (deletedIds.has(ev.id)) return false;
 
     // Date filtering
@@ -174,14 +252,26 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
             </p>
           </div>
 
-          <button
-            onClick={exportCSV}
-            className="btn btn-outline btn-sm"
-            disabled={filteredEvents.length === 0}
-          >
-            <Download size={14} />
-            <span>Export CSV Report</span>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={fetchEvents}
+              className="btn btn-outline btn-sm"
+              disabled={isLoading}
+              title="Refresh events list from database"
+            >
+              <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+              <span>Refresh</span>
+            </button>
+
+            <button
+              onClick={exportCSV}
+              className="btn btn-outline btn-sm"
+              disabled={filteredEvents.length === 0}
+            >
+              <Download size={14} />
+              <span>Export CSV Report</span>
+            </button>
+          </div>
         </div>
 
         {/* Filter Controls Bar */}

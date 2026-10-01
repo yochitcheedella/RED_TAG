@@ -299,11 +299,13 @@ router.post('/kiosk/cancel', (req, res) => {
 // Kiosk: Confirm Placement by operator clicking "OBJECT PLACED"
 router.post('/kiosk/confirm-placement', async (req, res) => {
   try {
-    const { registration_id, imageBase64, objectType } = req.body;
+    const { registration_id, imageBase64, objectType, objectId, box } = req.body;
     const result = await correlationEngine.confirmKioskPlacement({
       registrationId: registration_id,
       imageBase64,
-      objectType
+      objectType,
+      objectId,
+      box
     });
     res.json(result);
   } catch (err) {
@@ -1097,16 +1099,34 @@ router.post('/reports/send-teams', requireAdmin, async (req, res) => {
 router.post('/reports/send-email', requireAdmin, async (req, res) => {
   try {
     const { email, event } = req.body;
-    const recipient = (email && email.trim()) || getSetting('alert_email_recipient') || process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com';
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'Please enter a valid recipient email address.' });
+    }
+    const recipient = email.trim();
+    console.log(`✉️ [Reports Dispatch] Dispatching report strictly to user-entered recipient: ${recipient}`);
+
     const events = getEvents(100);
     const excelRes = await reportingService.generateIncidentExcel(events);
 
+    // Keep evidence bundle lightweight (up to 10 latest evidence files) for fast reliable delivery
     const evidenceFiles = events
       .filter(e => e.evidence_image)
+      .slice(0, 10)
       .map(e => e.evidence_image);
 
-    const zipRes = await reportingService.bundleReportZip(excelRes.filePath, evidenceFiles);
-    const result = await reportingService.sendEmailAlert(event || {}, zipRes.zipPath, recipient);
+    let zipRes = null;
+    try {
+      zipRes = await reportingService.bundleReportZip(excelRes.filePath, evidenceFiles);
+    } catch (zipErr) {
+      console.warn('⚠️ Could not bundle ZIP, sending Excel only:', zipErr.message);
+    }
+
+    const result = await reportingService.sendEmailAlert(
+      event || {},
+      zipRes ? zipRes.zipPath : null,
+      recipient,
+      excelRes.filePath
+    );
     res.json(result);
   } catch (err) {
     console.error('Report email send error:', err);
@@ -1139,7 +1159,7 @@ router.get('/alerts/:id/mail-status', requireAdmin, (req, res) => {
       emailStatus: alert.email_status || job?.status || 'PENDING',
       emailSentAt: alert.email_sent_at || job?.sent_at || null,
       emailError: alert.email_error || job?.failure_reason || null,
-      recipient: job?.recipient || getSetting('alert_email_recipient') || 'yochitcheedella@gmail.com',
+      recipient: job?.recipient || getSetting('alert_email_recipient') || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com',
       job
     });
   } catch (err) {
@@ -1195,7 +1215,8 @@ router.post('/alerts/:id/retry-email', requireAdmin, async (req, res) => {
 // Direct test-email trigger for unauthorized incident notifications (Admin Only)
 router.post('/alerts/test-email', requireAdmin, async (req, res) => {
   try {
-    const { email = 'yochitcheedella@gmail.com' } = req.body;
+    const { email } = req.body;
+    const targetEmail = (email && email.trim()) || mailQueueService.getRecipientList();
     const events = getEvents(20);
     const unauthorizedEvent = events.find(e => e.event_type === 'UNAUTHORIZED_PLACEMENT' || e.authorization_status !== 'AUTHORIZED') || {
       id: `EVT-${Date.now()}-TEST`,
@@ -1218,7 +1239,7 @@ router.post('/alerts/test-email', requireAdmin, async (req, res) => {
     const enqRes = await mailQueueService.enqueueMailJob(
       unauthorizedEvent,
       sampleEvidence,
-      email
+      targetEmail
     );
 
     let processRes = null;
