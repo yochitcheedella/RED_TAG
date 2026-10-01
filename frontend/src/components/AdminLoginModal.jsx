@@ -37,8 +37,10 @@ export default function AdminLoginModal({ onLoginSuccess, onCancel, initialRole 
 
       if (res.ok && data.success && data.token) {
         sessionStorage.setItem('redtag_admin_token', data.token);
+        localStorage.setItem('redtag_admin_token', data.token);
         const resolvedRole = (data.user?.role || activeRole).toLowerCase();
         sessionStorage.setItem('redtag_user_role', resolvedRole);
+        localStorage.setItem('redtag_user_role', resolvedRole);
         onLoginSuccess(data.token, data.user || { username, role: resolvedRole });
       } else {
         setErrorMsg(data.error || 'Invalid credentials. Access denied.');

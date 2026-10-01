@@ -64,7 +64,7 @@ export default function App() {
 
   // Authenticated Data Fetching (Strictly executed when Admin is verified)
   const fetchAdminData = useCallback(async (tokenToUse) => {
-    const token = tokenToUse || adminToken || sessionStorage.getItem('redtag_admin_token');
+    const token = tokenToUse || adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
     if (!token) return;
 
     const headers = { 'Authorization': `Bearer ${token}` };
@@ -107,7 +107,7 @@ export default function App() {
 
   // Initial Verification: Check if user already holds a valid admin session or requested #admin
   useEffect(() => {
-    const savedToken = sessionStorage.getItem('redtag_admin_token');
+    const savedToken = sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
     const urlParams = new URLSearchParams(window.location.search);
     const wantsAdmin = urlParams.get('view') === 'admin' || window.location.pathname.includes('/admin') || window.location.hash === '#admin';
 
@@ -119,9 +119,10 @@ export default function App() {
         .then(data => {
           if (data.authenticated) {
             setAdminToken(savedToken);
-            const verifiedRole = (data.user?.role || sessionStorage.getItem('redtag_user_role') || 'admin').toLowerCase();
+            const verifiedRole = (data.user?.role || sessionStorage.getItem('redtag_user_role') || localStorage.getItem('redtag_user_role') || 'admin').toLowerCase();
             setUserRole(verifiedRole);
             sessionStorage.setItem('redtag_user_role', verifiedRole);
+            localStorage.setItem('redtag_user_role', verifiedRole);
             if (wantsAdmin) {
               setViewMode('admin');
               fetchAdminData(savedToken);
@@ -129,6 +130,8 @@ export default function App() {
           } else {
             sessionStorage.removeItem('redtag_admin_token');
             sessionStorage.removeItem('redtag_user_role');
+            localStorage.removeItem('redtag_admin_token');
+            localStorage.removeItem('redtag_user_role');
             setAdminToken(null);
             if (wantsAdmin) setShowAdminLogin(true);
           }
@@ -136,6 +139,8 @@ export default function App() {
         .catch(() => {
           sessionStorage.removeItem('redtag_admin_token');
           sessionStorage.removeItem('redtag_user_role');
+          localStorage.removeItem('redtag_admin_token');
+          localStorage.removeItem('redtag_user_role');
           setAdminToken(null);
         });
     } else if (wantsAdmin) {
@@ -240,10 +245,16 @@ export default function App() {
     s.on('event_deleted', (data) => {
       const delId = data?.id || data?.eventId;
       if (delId) {
-        setEvents(prev => prev.filter(e => e.id !== delId && e.event_id !== delId));
+        setEvents(prev => prev.filter(e => e.id !== delId && e.event_id !== delId && e.eventId !== delId));
         setUnauthorizedAlert(curr => (curr?.eventId === delId || curr?.event?.id === delId ? null : curr));
         setSelectedEvidenceEvent(curr => (curr?.id === delId ? null : curr));
       }
+    });
+
+    s.on('events_cleared', () => {
+      setEvents([]);
+      setUnauthorizedAlert(null);
+      setSelectedEvidenceEvent(null);
     });
 
     s.on('placement_deleted', (data) => {
@@ -501,7 +512,8 @@ export default function App() {
               userRole={userRole}
               socket={socket}
               onSelectEvidence={(ev) => setSelectedEvidenceEvent(ev)}
-              onDeleteEvent={(id) => setEvents(prev => prev.filter(e => e.id !== id))}
+              onDeleteEvent={(id) => setEvents(prev => prev.filter(e => e.id !== id && e.event_id !== id && e.eventId !== id))}
+              onClearEvents={() => setEvents([])}
             />
           </div>
 

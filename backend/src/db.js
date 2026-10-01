@@ -782,7 +782,21 @@ export function deleteEvent(eventId) {
   try {
     db.prepare('DELETE FROM kiosk_registrations WHERE event_id = ?').run(eventId);
   } catch (_) {}
+  try {
+    db.prepare('DELETE FROM alerts WHERE object_event_id = ?').run(eventId);
+  } catch (_) {}
+  try {
+    db.prepare('DELETE FROM objects WHERE event_id = ?').run(eventId);
+  } catch (_) {}
   return db.prepare('DELETE FROM events WHERE id = ?').run(eventId);
+}
+
+export function clearEvents() {
+  try { db.prepare('DELETE FROM mail_jobs').run(); } catch (_) {}
+  try { db.prepare('DELETE FROM kiosk_registrations').run(); } catch (_) {}
+  try { db.prepare('DELETE FROM alerts').run(); } catch (_) {}
+  try { db.prepare('DELETE FROM objects').run(); } catch (_) {}
+  return db.prepare('DELETE FROM events').run();
 }
 
 export function getEvents(limit = 100) {

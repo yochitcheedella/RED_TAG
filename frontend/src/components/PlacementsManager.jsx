@@ -5,7 +5,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
   const [placements, setPlacements] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filterText, setFilterText] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
   const [selectedPlacement, setSelectedPlacement] = useState(null);
 
   // Real-time synchronization when any admin deletes a placement
@@ -122,20 +121,14 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
     }
 
     const q = filterText.toLowerCase();
-    const matchesSearch =
+    return (
       (p.employee_name || '').toLowerCase().includes(q) ||
       (p.item_name || '').toLowerCase().includes(q) ||
       (p.department || '').toLowerCase().includes(q) ||
       (p.serial_number || '').toLowerCase().includes(q) ||
       (p.placement_reason || '').toLowerCase().includes(q) ||
-      (p.rfid_uid || '').toLowerCase().includes(q);
-
-    const matchesStatus =
-      statusFilter === 'ALL' ||
-      (statusFilter === 'PLACED' && p.state === 'PRESENT') ||
-      (statusFilter === 'REMOVED' && p.state === 'REMOVED');
-
-    return matchesSearch && matchesStatus;
+      (p.rfid_uid || '').toLowerCase().includes(q)
+    );
   });
 
   const formatTimestamp = (ts) => {
@@ -158,7 +151,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
       'Item Name',
       'Serial / ID',
       'Placement Reason',
-      'Status',
       'RFID UID'
     ];
     const rows = filteredPlacements.map((p) => [
@@ -169,7 +161,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
       `"${(p.item_name || p.object_type || '—').replace(/"/g, '""')}"`,
       `"${(p.serial_number || p.object_id || '—').replace(/"/g, '""')}"`,
       `"${(p.placement_reason || '—').replace(/"/g, '""')}"`,
-      `"${p.state === 'REMOVED' ? 'REMOVED' : 'PLACED'}"`,
       `"${(p.rfid_uid || '—').replace(/"/g, '""')}"`
     ]);
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
@@ -238,24 +229,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
             />
           </div>
 
-          {/* Filter Status */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            style={{
-              padding: '7px 12px',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--bg-muted)',
-              color: 'var(--text-primary)',
-              fontSize: '0.8rem'
-            }}
-          >
-            <option value="ALL">All Registered Placements</option>
-            <option value="PLACED">Placed (Present)</option>
-            <option value="REMOVED">Removed</option>
-          </select>
-
           <button
             onClick={fetchPlacements}
             disabled={isLoading}
@@ -295,7 +268,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Item</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Serial / ID</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Reason</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Status</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Placed At</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'center' }}>Evidence</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'right' }}>Action</th>
@@ -304,7 +276,7 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
             <tbody>
               {filteredPlacements.length === 0 ? (
                 <tr>
-                  <td colSpan="9" style={{ padding: '36px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <td colSpan="8" style={{ padding: '36px', textAlign: 'center', color: 'var(--text-muted)' }}>
                     {isLoading ? 'Loading placement records...' : 'No placement records found.'}
                   </td>
                 </tr>
@@ -359,25 +331,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                       {/* Reason */}
                       <td style={{ padding: '12px 16px', color: 'var(--text-secondary)', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {p.placement_reason || '—'}
-                      </td>
-
-                      {/* Status */}
-                      <td style={{ padding: '12px 16px' }}>
-                        {isPresent ? (
-                          isAuth ? (
-                            <span className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <CheckCircle size={10} /> PLACED
-                            </span>
-                          ) : (
-                            <span className="badge badge-danger" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <AlertCircle size={10} /> UNAUTHORIZED
-                            </span>
-                          )
-                        ) : (
-                          <span className="badge badge-neutral" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                            <Clock size={10} /> REMOVED
-                          </span>
-                        )}
                       </td>
 
                       {/* Placed At */}

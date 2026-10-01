@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera, Trash2 } from 'lucide-react';
 
-export default function EventsManager({ events = [], onSelectEvidence, adminToken, userRole = 'admin', socket, onDeleteEvent }) {
+export default function EventsManager({ events = [], onSelectEvidence, adminToken, userRole = 'admin', socket, onDeleteEvent, onClearEvents }) {
   const [deletedIds, setDeletedIds] = useState(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [authFilter, setAuthFilter] = useState('ALL'); // ALL, AUTHORIZED, UNAUTHORIZED, RFID_MISSING, RFID_INVALID
@@ -17,11 +17,17 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
         setDeletedIds(prev => new Set(prev).add(delId));
       }
     };
+    const handleEventsCleared = () => {
+      setDeletedIds(new Set());
+      onClearEvents?.();
+    };
     socket.on('event_deleted', handleEventDeleted);
+    socket.on('events_cleared', handleEventsCleared);
     return () => {
       socket.off('event_deleted', handleEventDeleted);
+      socket.off('events_cleared', handleEventsCleared);
     };
-  }, [socket]);
+  }, [socket, onClearEvents]);
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -66,7 +72,7 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
     }
 
     try {
-      const token = adminToken || sessionStorage.getItem('redtag_admin_token') || '';
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token') || '';
       const res = await fetch(`/api/admin/events/${encodeURIComponent(eventId)}`, {
         method: 'DELETE',
         headers: {

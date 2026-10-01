@@ -29,7 +29,8 @@ import {
   expireKioskRegistration,
   getPlacements,
   deletePlacement,
-  deleteEvent
+  deleteEvent,
+  clearEvents
 } from '../db.js';
 import {
   requireAdmin,
@@ -134,7 +135,7 @@ router.delete('/admin/placements/:id', requireStrictAdmin, (req, res) => {
 });
 
 // Admin Delete Event Record (Restricted to Admin - Operators forbidden)
-router.delete('/admin/events/:id', requireStrictAdmin, (req, res) => {
+router.delete(['/admin/events/:id', '/events/:id'], requireStrictAdmin, (req, res) => {
   const { id } = req.params;
   try {
     deleteEvent(id);
@@ -145,6 +146,20 @@ router.delete('/admin/events/:id', requireStrictAdmin, (req, res) => {
   } catch (err) {
     console.error('Error deleting event:', err);
     res.status(500).json({ error: 'Failed to delete event record.' });
+  }
+});
+
+// Admin Clear All Events (Restricted to Admin)
+router.post(['/admin/events/clear', '/events/clear'], requireStrictAdmin, (req, res) => {
+  try {
+    clearEvents();
+    if (visionService?.io) {
+      visionService.io.emit('events_cleared');
+    }
+    res.json({ success: true, message: 'All event records cleared successfully.' });
+  } catch (err) {
+    console.error('Error clearing events:', err);
+    res.status(500).json({ error: 'Failed to clear events.' });
   }
 });
 
