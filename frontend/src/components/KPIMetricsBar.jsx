@@ -1,14 +1,41 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Package, ShieldCheck, AlertTriangle, Activity } from 'lucide-react';
+import DateRangeFilter from './DateRangeFilter';
+import { isWithinDateRange, computePresetDates, formatYMD } from '../utils/dateFilterUtils';
 
 export default function KPIMetricsBar({ events = [], systemStatus, cameraActive = false }) {
-  // Filter today's placement events
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const todayEvents = events.filter(e => e.timestamp && e.timestamp.startsWith(todayStr));
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [appliedStartDate, setAppliedStartDate] = useState(() => formatYMD(new Date()));
+  const [appliedEndDate, setAppliedEndDate] = useState(() => formatYMD(new Date()));
+  const [quickPreset, setQuickPreset] = useState('TODAY');
 
-  const authPlacements = todayEvents.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT');
-  const unauthPlacements = todayEvents.filter(e => e.event_type === 'UNAUTHORIZED_PLACEMENT');
-  const totalPlacementsToday = authPlacements.length + unauthPlacements.length;
+  const handleApplyDateRange = () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    if (!startDate && !endDate) {
+      setQuickPreset('ALL');
+    } else {
+      setQuickPreset('CUSTOM');
+    }
+  };
+
+  const handleQuickPreset = (e) => {
+    const preset = e.target.value;
+    setQuickPreset(preset);
+    const { startDate: s, endDate: end } = computePresetDates(preset);
+    setStartDate(s);
+    setEndDate(end);
+    setAppliedStartDate(s);
+    setAppliedEndDate(end);
+  };
+
+  // Filter placement events by applied range
+  const rangeEvents = events.filter(e => isWithinDateRange(e.timestamp, appliedStartDate, appliedEndDate));
+
+  const authPlacements = rangeEvents.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT');
+  const unauthPlacements = rangeEvents.filter(e => e.event_type === 'UNAUTHORIZED_PLACEMENT');
+  const totalPlacements = authPlacements.length + unauthPlacements.length;
 
   // System status calculation based on real camera + RFID + AI
   const isCameraOnline = cameraActive;
@@ -42,60 +69,95 @@ export default function KPIMetricsBar({ events = [], systemStatus, cameraActive 
     systemStatusSubtitle = 'AI Vision detector stopped';
   }
 
+  const rangeLabel = quickPreset === 'TODAY' ? 'TODAY' : 'IN RANGE';
+
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-      gap: '16px'
-    }}>
-      {/* 1. OBJECTS TODAY */}
-      <div className="soc-card" style={{
-        padding: '18px 20px',
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '16px' }}>
+      {/* Live Monitor Date Range Control Bar */}
+      <div style={{
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between'
+        justifyContent: 'space-between',
+        flexWrap: 'wrap',
+        gap: '10px',
+        padding: '10px 14px',
+        background: '#FFFFFF',
+        borderRadius: '8px',
+        border: '1px solid var(--border-medium)',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.03)'
       }}>
-        <div>
-          <div style={{
-            fontSize: '0.75rem',
-            fontWeight: 700,
-            color: 'var(--text-muted)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em'
-          }}>
-            OBJECTS TODAY
-          </div>
-          <div style={{
-            fontSize: '1.75rem',
-            fontWeight: 800,
-            color: 'var(--text-primary)',
-            lineHeight: 1.15,
-            marginTop: '4px',
-            fontFamily: 'var(--font-mono)'
-          }}>
-            {totalPlacementsToday}
-          </div>
-          <div style={{
-            fontSize: '0.75rem',
-            color: 'var(--text-muted)',
-            marginTop: '4px'
-          }}>
-            placements
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Live Metrics Filter:
+          </span>
+          <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+            {appliedStartDate || appliedEndDate ? `${appliedStartDate || 'Any'} to ${appliedEndDate || 'Now'}` : 'All Time'}
+          </span>
         </div>
-        <div style={{
-          width: '42px',
-          height: '42px',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--info-bg)',
-          border: '1px solid var(--info-border)',
+        <DateRangeFilter
+          startDate={startDate}
+          endDate={endDate}
+          onStartDateChange={setStartDate}
+          onEndDateChange={setEndDate}
+          onApply={handleApplyDateRange}
+          quickPreset={quickPreset}
+          onQuickPresetChange={handleQuickPreset}
+        />
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+        gap: '16px'
+      }}>
+        {/* 1. OBJECTS TODAY / IN RANGE */}
+        <div className="soc-card" style={{
+          padding: '18px 20px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center'
+          justifyContent: 'space-between'
         }}>
-          <Package size={20} color="var(--info)" />
+          <div>
+            <div style={{
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              color: 'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em'
+            }}>
+              OBJECTS {rangeLabel}
+            </div>
+            <div style={{
+              fontSize: '1.75rem',
+              fontWeight: 800,
+              color: 'var(--text-primary)',
+              lineHeight: 1.15,
+              marginTop: '4px',
+              fontFamily: 'var(--font-mono)'
+            }}>
+              {totalPlacements}
+            </div>
+            <div style={{
+              fontSize: '0.75rem',
+              color: 'var(--text-muted)',
+              marginTop: '4px'
+            }}>
+              placements
+            </div>
+          </div>
+          <div style={{
+            width: '42px',
+            height: '42px',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--info-bg)',
+            border: '1px solid var(--info-border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <Package size={20} color="var(--info)" />
+          </div>
         </div>
-      </div>
 
       {/* 2. AUTHORIZED */}
       <div className="soc-card" style={{
@@ -248,5 +310,6 @@ export default function KPIMetricsBar({ events = [], systemStatus, cameraActive 
         </div>
       </div>
     </div>
+  </div>
   );
 }

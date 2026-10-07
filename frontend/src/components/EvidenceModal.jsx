@@ -297,7 +297,7 @@ export default function EvidenceModal({ event, onClose }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <Mail size={13} color="var(--brand-red)" />
                 <span>
-                  <strong>INCIDENT EMAIL:</strong> Forensic crop embedded & attached to <em>{event.recipient || 'yochitcheedella@gmail.com'}</em>
+                  <strong>INCIDENT EMAIL:</strong> Forensic crop embedded & attached to <em>{event.recipient || 'safety-admin@company.com'}</em>
                 </span>
               </div>
               <span className="badge badge-success" style={{ fontSize: '0.68rem', padding: '2px 6px' }}>

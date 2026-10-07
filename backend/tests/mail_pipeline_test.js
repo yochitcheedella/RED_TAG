@@ -77,11 +77,11 @@ async function runMailPipelineTests() {
   assert(timeline[2].label.includes('Stationary verification completed'), 'Timeline stage 3: Stationary verification completed');
 
   // Test 3: Enqueue Mail Job
-  const enqResult = await mailQueueService.enqueueMailJob(savedEvent, testEvidenceFilename, 'yochitcheedella@gmail.com');
+  const enqResult = await mailQueueService.enqueueMailJob(savedEvent, testEvidenceFilename, 'safety-admin@company.com');
   assert(enqResult.success === true, 'Requirement 2: Enqueue mail job succeeds');
   assert(enqResult.mailJob && enqResult.mailJob.id.startsWith('MAIL-'), 'Requirement 18: Mail job ID generated format MAIL-XXXXX');
   assert(enqResult.mailJob.subject === `🚨 RED TAG ALERT | Unauthorized Placement | ${testEventId}`, 'Requirement 8: Dynamic subject format');
-  assert(enqResult.mailJob.recipient === 'yochitcheedella@gmail.com', 'Requirement 9: Configured recipient assigned');
+  assert(enqResult.mailJob.recipient === 'safety-admin@company.com', 'Requirement 9: Configured recipient assigned');
 
   // Test 4: Verify Mail Job Payload
   const jobPayload = JSON.parse(enqResult.mailJob.payload);

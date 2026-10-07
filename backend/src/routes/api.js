@@ -30,11 +30,26 @@ import {
   getPlacements,
   deletePlacement,
   deleteEvent,
-  clearEvents
+  clearEvents,
+  getAllUsers,
+  getUserById,
+  getUserByUsername,
+  getUserByRFID,
+  createUser,
+  updateUser,
+  deleteUser,
+  getUserPlacements,
+  getUserActivePlacement,
+  toggleEmployeeStatus,
+  db
 } from '../db.js';
 import {
+  authenticate,
+  requireUser,
+  requireSupervisor,
   requireAdmin,
   requireStrictAdmin,
+  generateToken,
   generateAdminToken,
   revokeAdminToken,
   verifyCredentials,
@@ -56,50 +71,151 @@ if (!fs.existsSync(evidenceDir)) fs.mkdirSync(evidenceDir, { recursive: true });
 const router = express.Router();
 
 // ==========================================
-// 1. ADMINISTRATOR & OPERATOR AUTHENTICATION
+// 1. 3-TIER RBAC AUTHENTICATION (User, Supervisor, Admin)
 // ==========================================
+
+// Unified 3-Tier Login endpoint (supports username/password OR RFID badge identity)
+router.post('/auth/login', (req, res) => {
+  const { username, password, rfid_uid, role } = req.body;
+
+  // 1. RFID Badge Login (Direct Identity for Employee/User)
+  if (rfid_uid) {
+    const cleanRFID = rfid_uid.trim().toUpperCase();
+    let user = getUserByRFID(cleanRFID);
+    let emp = null;
+    if (!user) {
+      emp = getEmployeeByUID(cleanRFID);
+      if (emp) {
+        user = {
+          id: `USR-${cleanRFID}`,
+          username: emp.name.toLowerCase().replace(/\s+/g, '.'),
+          role: 'user',
+          name: emp.name,
+          employee_id: emp.id,
+          rfid_uid: cleanRFID,
+          department: emp.department || 'General',
+          status: emp.is_authorized ? 'ACTIVE' : 'DISABLED'
+        };
+      }
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: `RFID Badge [${cleanRFID}] not recognized in employee directory.` });
+    }
+
+    if (user.status === 'DISABLED') {
+      return res.status(403).json({ error: 'Employee badge is deactivated. Contact Administrator.' });
+    }
+
+    const { token, expiresAt } = generateToken(user);
+    console.log(`📡 [Auth] Employee logged in via RFID: ${user.name} (${user.role})`);
+    return res.json({
+      success: true,
+      token,
+      expiresAt,
+      user
+    });
+  }
+
+  // 2. Username / Password Login
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required.' });
+  }
+
+  const user = getUserByUsername(username);
+  if (user) {
+    if (user.status === 'DISABLED') {
+      return res.status(403).json({ error: 'This account has been disabled by Administrator.' });
+    }
+
+    const isValid = user.password === password ||
+      (user.role === 'admin' && verifyCredentials(username, password)) ||
+      (user.role === 'supervisor' && verifyOperatorCredentials(username, password));
+
+    if (isValid) {
+      const { token, expiresAt } = generateToken(user);
+      console.log(`🔐 [Auth] User logged in: ${user.username} (${user.role})`);
+      return res.json({
+        success: true,
+        token,
+        expiresAt,
+        user
+      });
+    }
+  }
+
+  // Fallback check against hardcoded env credentials
+  if (verifyCredentials(username, password)) {
+    const adminUser = {
+      id: 'USR-ADMIN',
+      username,
+      role: 'admin',
+      name: 'System Administrator',
+      department: 'IT & Infrastructure'
+    };
+    const { token, expiresAt } = generateToken(adminUser);
+    return res.json({ success: true, token, expiresAt, user: adminUser });
+  }
+
+  if (verifyOperatorCredentials(username, password)) {
+    const supUser = {
+      id: 'USR-SUPERVISOR',
+      username,
+      role: 'supervisor',
+      name: 'SOC Area Supervisor',
+      department: 'Security Operations'
+    };
+    const { token, expiresAt } = generateToken(supUser);
+    return res.json({ success: true, token, expiresAt, user: supUser });
+  }
+
+  return res.status(401).json({ error: 'Invalid username or password.' });
+});
+
+// Legacy Admin/Operator login for backwards compatibility
 router.post('/admin/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required.' });
   }
 
-  // 1. Check if Admin credentials
+  const user = getUserByUsername(username);
+  if (user && user.password === password) {
+    const { token, expiresAt } = generateToken(user);
+    return res.json({ success: true, token, expiresAt, user });
+  }
+
   if (verifyCredentials(username, password)) {
-    const { token, expiresAt, role } = generateAdminToken(username, 'admin');
-    console.log(`🔐 [Auth] Administrator logged in: ${username}`);
+    const { token, expiresAt } = generateAdminToken(username, 'admin');
     return res.json({
       success: true,
       token,
       expiresAt,
-      user: { username, role: 'admin' }
+      user: { username, role: 'admin', name: 'System Administrator' }
     });
   }
 
-  // 2. Check if Operator credentials
   if (verifyOperatorCredentials(username, password)) {
-    const { token, expiresAt, role } = generateAdminToken(username, 'operator');
-    console.log(`👷 [Auth] Operator logged in: ${username}`);
+    const { token, expiresAt } = generateAdminToken(username, 'supervisor');
     return res.json({
       success: true,
       token,
       expiresAt,
-      user: { username, role: 'operator' }
+      user: { username, role: 'supervisor', name: 'SOC Area Supervisor' }
     });
   }
 
-  console.warn(`⚠️ [Auth] Failed login attempt for username: ${username}`);
   return res.status(401).json({ error: 'Invalid username or password.' });
 });
 
-router.get('/admin/verify', requireAdmin, (req, res) => {
+router.get(['/auth/verify', '/admin/verify', '/auth/me'], authenticate, (req, res) => {
   res.json({
     authenticated: true,
     user: req.user
   });
 });
 
-router.post('/admin/logout', (req, res) => {
+router.post(['/auth/logout', '/admin/logout'], (req, res) => {
   let token = null;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -112,15 +228,154 @@ router.post('/admin/logout', (req, res) => {
   res.json({ success: true, message: 'Logged out successfully.' });
 });
 
-// Admin Placements View (Detailed placement records with item metadata & evidence)
-router.get('/admin/placements', requireAdmin, (req, res) => {
+// ==========================================
+// 2. USER DASHBOARD — EMPLOYEE
+// (Employee sees ONLY their own placements, placement status & registration form)
+// ==========================================
+
+// Get user's own placements history
+router.get('/user/placements', authenticate, (req, res) => {
+  const role = (req.user?.role || '').toLowerCase();
+  const limit = parseInt(req.query.limit || '100', 10);
+
+  // If role is employee/user: strictly filter ONLY their own placements
+  if (role === 'user') {
+    const placements = getUserPlacements(req.user, limit);
+    return res.json(placements);
+  }
+
+  // Supervisor or Admin can see all placements
+  const allPlacements = getPlacements(limit);
+  res.json(allPlacements);
+});
+
+// Get user's current active placement and countdown timer status
+router.get('/user/active-placement', authenticate, (req, res) => {
+  const activePlacement = getUserActivePlacement(req.user);
+  let timeRemainingSec = 0;
+  if (activePlacement) {
+    const durationMin = activePlacement.placement_duration_min || activePlacement.duration_min || 5;
+    const startTs = activePlacement.placed_at || activePlacement.registered_at || activePlacement.created_at || activePlacement.first_seen;
+    if (startTs) {
+      const startTime = new Date(startTs).getTime();
+      const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+      timeRemainingSec = Math.max(0, (durationMin * 60) - elapsedSec);
+    } else {
+      timeRemainingSec = durationMin * 60;
+    }
+  }
+  res.json({
+    hasActivePlacement: !!activePlacement,
+    activePlacement: activePlacement || null,
+    placement: activePlacement || null,
+    timeRemainingSec
+  });
+});
+
+// Employee registers new object for placement (Placement Form)
+router.post('/user/placements', requireUser, async (req, res) => {
+  const { item_name, serial_number, description, reason, duration_min } = req.body;
+  if (!item_name || !item_name.trim()) {
+    return res.status(400).json({ error: 'Item name is required.' });
+  }
+
+  const rfidUID = req.user.rfid_uid || `GEN-${Date.now().toString().slice(-4)}`;
+  const employeeName = req.user.name || req.user.username;
+  const employeeId = req.user.employee_id || req.user.id;
+  const department = req.user.department || 'General';
+  const duration = parseInt(duration_min || 5, 10);
+
+  try {
+    const reg = createKioskRegistration({
+      rfid_uid: rfidUID,
+      employee_id: employeeId,
+      employee_name: employeeName,
+      department,
+      item_name: item_name.trim(),
+      serial_number: serial_number ? serial_number.trim() : null,
+      description: description ? description.trim() : null,
+      reason: reason ? reason.trim() : 'Temporary Red Tag placement',
+      duration_min: duration
+    });
+
+    if (visionService?.io) {
+      visionService.io.emit('kiosk_session_started', reg);
+    }
+
+    res.json({
+      success: true,
+      placement_id: reg.id,
+      placementId: reg.id,
+      registration: reg,
+      message: `Placement registration created for ${item_name}. Place item inside the Red Tag Area.`
+    });
+  } catch (err) {
+    console.error('User placement registration error:', err);
+    res.status(500).json({ error: 'Failed to create placement registration.' });
+  }
+});
+
+// ==========================================
+// 3. USER & SUPERVISOR MANAGEMENT (ADMIN ONLY)
+// ==========================================
+router.get('/users', requireAdmin, (req, res) => {
+  res.json(getAllUsers());
+});
+
+router.post('/users', requireAdmin, (req, res) => {
+  const { username, password, role, name, department, employee_id, rfid_uid, status } = req.body;
+  if (!username || !username.trim()) {
+    return res.status(400).json({ error: 'Username is required.' });
+  }
+  const existing = getUserByUsername(username);
+  if (existing) {
+    return res.status(400).json({ error: `Username '${username}' is already in use.` });
+  }
+  const newUser = createUser({
+    username,
+    password: password || 'user123',
+    role: role || 'user',
+    name: name || username,
+    department: department || 'General',
+    employee_id,
+    rfid_uid,
+    status: status || 'ACTIVE'
+  });
+  res.json({ success: true, user: newUser });
+});
+
+router.put('/users/:id', requireAdmin, (req, res) => {
+  const updated = updateUser(req.params.id, req.body);
+  if (!updated) return res.status(404).json({ error: 'User not found.' });
+  res.json({ success: true, user: updated });
+});
+
+router.delete('/users/:id', requireAdmin, (req, res) => {
+  deleteUser(req.params.id);
+  res.json({ success: true, message: 'User deleted successfully.' });
+});
+
+// RFID Management (Admin Only)
+router.get('/rfid/cards', requireAdmin, (req, res) => {
+  const employees = getAllEmployees();
+  res.json(employees);
+});
+
+router.post('/rfid/toggle-status', requireAdmin, (req, res) => {
+  const { id, is_authorized } = req.body;
+  const updated = toggleEmployeeStatus(id, is_authorized);
+  res.json({ success: true, employee: updated });
+});
+
+// Placements View (Supervisor & Admin Monitoring)
+router.get(['/admin/placements', '/placements'], requireSupervisor, (req, res) => {
   const limit = parseInt(req.query.limit || '100', 10);
   const placements = getPlacements(limit);
   res.json(placements);
 });
 
-// Admin Delete Placement Record (Restricted to Admin - Operators forbidden)
-router.delete('/admin/placements/:id', requireStrictAdmin, (req, res) => {
+// Delete Placement Record (Strictly Admin - Supervisors forbidden)
+router.delete(['/admin/placements/:id', '/placements/:id'], requireAdmin, (req, res) => {
   const { id } = req.params;
   try {
     deletePlacement(id);
@@ -544,28 +799,28 @@ router.delete('/employees/:id', requireStrictAdmin, (req, res) => {
   res.json({ success: true });
 });
 
-// Events Audit Log (Admin Only)
-router.get('/events', requireAdmin, (req, res) => {
+// Events Audit Log (Supervisor & Admin Monitoring — Forbidden to User)
+router.get('/events', requireSupervisor, (req, res) => {
   const limit = parseInt(req.query.limit || '100', 10);
   const events = getEvents(limit);
   res.json(events);
 });
 
-// Alerts Management (Admin Only)
-router.get('/alerts', requireAdmin, (req, res) => {
+// Alerts Management (Supervisor & Admin Monitoring)
+router.get('/alerts', requireSupervisor, (req, res) => {
   const filter = req.query.filter || 'ALL';
   const limit = parseInt(req.query.limit || '100', 10);
   const alerts = getAlerts(filter, limit);
   res.json(alerts);
 });
 
-router.get('/alerts/:id', requireAdmin, (req, res) => {
+router.get('/alerts/:id', requireSupervisor, (req, res) => {
   const alert = getAlertById(req.params.id);
   if (!alert) return res.status(404).json({ error: 'Alert not found' });
   res.json(alert);
 });
 
-router.post('/alerts/:id/acknowledge', requireAdmin, (req, res) => {
+router.post('/alerts/:id/acknowledge', requireSupervisor, (req, res) => {
   const success = updateAlertStatus(req.params.id, 'ACKNOWLEDGED');
   if (success && visionService.io) {
     visionService.io.emit('alert_status_changed', { id: req.params.id, status: 'ACKNOWLEDGED' });
@@ -581,25 +836,38 @@ router.post('/alerts/:id/resolve', requireAdmin, (req, res) => {
   res.json({ success, id: req.params.id, status: 'RESOLVED' });
 });
 
-// Settings (Admin Only)
+// Settings (Admin & Operator Access, Local Fallback)
 router.get('/settings', requireAdmin, (req, res) => {
   const settings = getAllSettings();
   res.json(settings);
 });
 
-router.put('/settings', requireAdmin, (req, res) => {
-  const updates = req.body;
+const handleUpdateSettings = (req, res) => {
+  const updates = req.body || {};
   for (const [key, value] of Object.entries(updates)) {
     updateSetting(key, value);
     if (key === 'roi') {
       visionService.setROI(value);
     }
+    if (key === 'persistence_ms') {
+      updateSetting('min_object_persistence_ms', value);
+    }
+    if (key === 'auth_window_ms') {
+      updateSetting('rfid_authorization_window_ms', value);
+    }
     if (key === 'app_mode') {
       console.log(`🔄 App Mode switched to: ${value}`);
     }
   }
-  res.json({ success: true, settings: getAllSettings() });
-});
+  const allSettings = getAllSettings();
+  if (visionService.io) {
+    visionService.io.emit('settings_updated', allSettings);
+  }
+  res.json({ success: true, settings: allSettings });
+};
+
+router.put('/settings', requireAdmin, handleUpdateSettings);
+router.post('/settings', requireAdmin, handleUpdateSettings);
 
 // Serial Ports for RFID Hardware
 router.get('/serial-ports', async (req, res) => {
@@ -760,6 +1028,9 @@ router.post('/vision/clear-objects', (req, res) => {
       clearTimeout(rfidService.tokenTimer);
       rfidService.tokenTimer = null;
     }
+    try {
+      db.prepare("UPDATE kiosk_registrations SET status = 'CANCELLED' WHERE status = 'PENDING_PLACEMENT'").run();
+    } catch (_) {}
   }
   if (visionService.io) {
     visionService.io.emit('objects_cleared', { label: label || 'ALL', objectId });
@@ -771,7 +1042,7 @@ router.post('/vision/clear-objects', (req, res) => {
 router.post('/vision/object-removed', (req, res) => {
   const { label, objectId } = req.body;
   visionService.clearTrackers(label || null);
-  const result = correlationEngine.handleObjectRemoved(objectId || label || null);
+  const result = correlationEngine.handleObjectRemoved(objectId || label || null, true);
   if (visionService.io) {
     visionService.io.emit('object_removed', { label: label || 'ALL', objectId, manual: true });
   }
@@ -1159,7 +1430,7 @@ router.get('/alerts/:id/mail-status', requireAdmin, (req, res) => {
       emailStatus: alert.email_status || job?.status || 'PENDING',
       emailSentAt: alert.email_sent_at || job?.sent_at || null,
       emailError: alert.email_error || job?.failure_reason || null,
-      recipient: job?.recipient || getSetting('alert_email_recipient') || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com',
+      recipient: job?.recipient || getSetting('alert_email_recipient') || process.env.ALERT_EMAIL_RECIPIENT || 'safety-admin@company.com',
       job
     });
   } catch (err) {

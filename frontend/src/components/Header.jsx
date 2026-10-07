@@ -1,17 +1,13 @@
 import React, { useState } from 'react';
-import { Camera, Radio, Video, FileText, BarChart3, Settings, Shield, User, Users, Volume2, VolumeX, Package, LogOut } from 'lucide-react';
+import { Camera, Radio, Volume2, VolumeX, User, LogOut, Package, Video, FileText, Users, BarChart3, Settings } from 'lucide-react';
 import { sounds } from '../utils/audio';
 
 export default function Header({
   systemStatus,
-  activeToken,
   activeTab,
-  setActiveTab,
-  onOpenSettings,
   onLogoutToKiosk,
   cameraActive = false,
-  userRole = 'admin',
-  setUserRole
+  userRole = 'admin'
 }) {
   const [muted, setMuted] = useState(false);
 
@@ -28,7 +24,7 @@ export default function Header({
 
   // Overall system status
   let overallStatusText = 'System Operational';
-  let overallStatusColor = '#16803C'; // Success Green
+  let overallStatusColor = '#16803C';
   let overallStatusBg = '#EDFDF2';
   let overallStatusBorder = '#A6F4C5';
 
@@ -48,152 +44,82 @@ export default function Header({
     overallStatusBg = '#FFFBEB';
     overallStatusBorder = '#FDE68A';
   } else if (!isAiOnline || !isBackendOnline) {
-    overallStatusText = 'System Attention Required';
+    overallStatusText = 'Attention Required';
     overallStatusColor = '#D97706';
     overallStatusBg = '#FFFBEB';
     overallStatusBorder = '#FDE68A';
   }
 
-  // Section 35: Role-based navigation
-  // Operator: Live Monitor, Alerts, Events
-  // Admin & Developer: Operator + Reports + Settings
-  const baseNavItems = [
-    { id: 'placements', label: 'Placements', icon: Package },
-    { id: 'monitor', label: 'Live Monitor', icon: Video },
-    { id: 'events', label: 'Events', icon: FileText },
-    { id: 'employees', label: 'Employees', icon: Users }
-  ];
-
-  if (userRole !== 'operator') {
-    baseNavItems.push({ id: 'reports', label: 'Reports', icon: BarChart3 });
-  }
-
-  const navItems = baseNavItems;
+  // Active section info
+  const tabNames = {
+    placements: { label: 'Active Placements & Asset Registry', icon: Package },
+    monitor: { label: 'Live CCTV Monitoring & Area Correlation', icon: Video },
+    events: { label: 'System Audit Events & Evidence Trail', icon: FileText },
+    employees: { label: 'User & RFID Management', icon: Users },
+    users: { label: 'User, Supervisor & RFID Management', icon: Users },
+    reports: { label: 'Compliance Reports & Analytics', icon: BarChart3 },
+    settings: { label: 'System Configuration', icon: Settings }
+  };
+  const currentTabInfo = tabNames[activeTab] || { label: 'Red Tag Area Console', icon: Package };
+  const TabIcon = currentTabInfo.icon;
 
   return (
     <header style={{
       background: '#FFFFFF',
       borderBottom: '1px solid var(--border-medium)',
       padding: '0 24px',
-      height: '64px',
+      height: '72px',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      gap: '16px',
-      boxShadow: '0 1px 3px 0 rgba(16, 24, 40, 0.05)',
       position: 'sticky',
       top: 0,
-      zIndex: 40
+      zIndex: 40,
+      boxShadow: '0 1px 3px 0 rgba(16, 24, 40, 0.05)'
     }}>
-      {/* Brand Identity */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', minWidth: '280px' }}>
+      {/* Left: Active Section Label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flexShrink: 1 }}>
         <div style={{
-          width: '36px',
-          height: '36px',
+          width: '38px',
+          height: '38px',
           borderRadius: 'var(--radius-sm)',
-          background: 'var(--brand-red)',
+          background: 'var(--bg-muted)',
+          border: '1px solid var(--border-subtle)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: '#FFFFFF',
-          fontWeight: 800,
-          fontSize: '15px',
-          letterSpacing: '-0.02em',
-          boxShadow: '0 1px 2px 0 rgba(217, 45, 32, 0.2)'
+          color: 'var(--text-primary)',
+          flexShrink: 0
         }}>
-          RT
+          <TabIcon size={18} />
         </div>
-        <div>
-          <h1 style={{
-            fontSize: '1.05rem',
-            fontWeight: 800,
+        <div style={{ minWidth: 0, overflow: 'hidden' }}>
+          <div style={{
+            fontSize: '0.92rem',
+            fontWeight: 700,
             color: 'var(--text-primary)',
-            lineHeight: 1.2,
-            letterSpacing: '-0.01em',
-            margin: 0
+            lineHeight: 1.25,
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+            overflow: 'hidden'
           }}>
-            RED TAG MONITOR
-          </h1>
-          <p style={{
-            fontSize: '0.72rem',
+            {currentTabInfo.label}
+          </div>
+          <div style={{
+            fontSize: '0.7rem',
             color: 'var(--text-muted)',
-            margin: 0,
             lineHeight: 1.2,
-            fontWeight: 500
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+            letterSpacing: '0.02em'
           }}>
-            Real-Time Red Tag Area Monitoring System
-          </p>
+            <span style={{ color: 'var(--brand-red)', fontWeight: 700 }}>RED TAG AREA MONITOR</span> • Edge AI & RFID Surveillance
+          </div>
         </div>
       </div>
 
-      {/* Global Navigation */}
-      <nav style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '100%' }}>
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              style={{
-                height: '42px',
-                padding: '0 14px',
-                fontSize: '0.8125rem',
-                fontWeight: isActive ? 700 : 500,
-                color: isActive ? 'var(--info)' : 'var(--text-secondary)',
-                background: isActive ? 'var(--info-bg)' : 'transparent',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid',
-                borderColor: isActive ? 'var(--info-border)' : 'transparent',
-                gap: '8px',
-                transition: 'all 0.15s ease'
-              }}
-            >
-              <Icon size={16} color={isActive ? 'var(--info)' : 'currentColor'} />
-              <span>{item.label}</span>
-              {item.badge && (
-                <span style={{
-                  background: 'var(--brand-red)',
-                  color: '#FFFFFF',
-                  fontSize: '0.65rem',
-                  fontWeight: 700,
-                  padding: '1px 6px',
-                  borderRadius: 'var(--radius-full)',
-                  lineHeight: 1.2
-                }}>
-                  {item.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
-
-        {userRole !== 'operator' && (
-          <button
-            onClick={onOpenSettings}
-            style={{
-              height: '42px',
-              padding: '0 14px',
-              fontSize: '0.8125rem',
-              fontWeight: 500,
-              color: 'var(--text-secondary)',
-              background: 'transparent',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid transparent',
-              gap: '8px',
-              transition: 'all 0.15s ease'
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-muted)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            <Settings size={16} />
-            <span>Settings</span>
-          </button>
-        )}
-      </nav>
-
-      {/* Right Side: Operational Status Badges & Admin User */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      {/* Right: Operational Status Badges & Quick Actions */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
         {/* Overall System Status */}
         <div style={{
           display: 'flex',
@@ -203,9 +129,10 @@ export default function Header({
           borderRadius: 'var(--radius-sm)',
           background: overallStatusBg,
           border: `1px solid ${overallStatusBorder}`,
-          fontSize: '0.75rem',
+          fontSize: '0.73rem',
           fontWeight: 600,
-          color: overallStatusColor
+          color: overallStatusColor,
+          whiteSpace: 'nowrap'
         }}>
           <span style={{
             width: '7px',
@@ -220,14 +147,15 @@ export default function Header({
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '6px',
-          padding: '5px 9px',
+          gap: '5px',
+          padding: '5px 8px',
           borderRadius: 'var(--radius-sm)',
           background: isCameraOnline ? 'var(--success-bg)' : 'var(--bg-muted)',
           border: `1px solid ${isCameraOnline ? 'var(--success-border)' : 'var(--border-subtle)'}`,
-          fontSize: '0.73rem',
+          fontSize: '0.72rem',
           color: isCameraOnline ? 'var(--success)' : 'var(--text-muted)',
-          fontWeight: 600
+          fontWeight: 600,
+          whiteSpace: 'nowrap'
         }}>
           <Camera size={13} />
           <span>Camera</span>
@@ -243,14 +171,15 @@ export default function Header({
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '6px',
-          padding: '5px 9px',
+          gap: '5px',
+          padding: '5px 8px',
           borderRadius: 'var(--radius-sm)',
           background: isRfidOnline ? 'var(--success-bg)' : (systemStatus?.appMode === 'hardware' ? 'var(--brand-red-bg)' : 'var(--warning-bg)'),
           border: `1px solid ${isRfidOnline ? 'var(--success-border)' : (systemStatus?.appMode === 'hardware' ? 'var(--brand-red-border)' : 'var(--warning-border)')}`,
-          fontSize: '0.73rem',
+          fontSize: '0.72rem',
           color: isRfidOnline ? 'var(--success)' : (systemStatus?.appMode === 'hardware' ? 'var(--brand-red)' : 'var(--warning)'),
-          fontWeight: 600
+          fontWeight: 600,
+          whiteSpace: 'nowrap'
         }}>
           <Radio size={13} />
           <span>RFID</span>
@@ -272,13 +201,17 @@ export default function Header({
             borderRadius: 'var(--radius-sm)',
             border: '1px solid var(--border-medium)',
             color: 'var(--text-secondary)',
-            background: '#FFFFFF'
+            background: '#FFFFFF',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
           }}
         >
           {muted ? <VolumeX size={15} color="#D92D20" /> : <Volume2 size={15} />}
         </button>
 
-        {/* User Profile Badge (Operator / Admin) */}
+        {/* User Profile Badge */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -295,7 +228,7 @@ export default function Header({
             width: '20px',
             height: '20px',
             borderRadius: '50%',
-            background: (userRole || '').toLowerCase() === 'operator' ? '#2563EB' : 'var(--brand-red)',
+            background: ((userRole || '').toLowerCase() === 'operator' || (userRole || '').toLowerCase() === 'supervisor') ? '#2563EB' : 'var(--brand-red)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -304,7 +237,7 @@ export default function Header({
             <User size={12} />
           </div>
           <span style={{ textTransform: 'capitalize' }}>
-            {(userRole || '').toLowerCase() === 'operator' ? 'Operator' : 'Admin'}
+            {((userRole || '').toLowerCase() === 'operator' || (userRole || '').toLowerCase() === 'supervisor') ? 'Supervisor' : 'Administrator'}
           </span>
         </div>
 
@@ -312,17 +245,18 @@ export default function Header({
         {onLogoutToKiosk && (
           <button
             onClick={onLogoutToKiosk}
-            className="btn btn-outline btn-xs"
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
               color: '#DC2626',
-              borderColor: 'rgba(220, 38, 38, 0.4)',
+              border: '1px solid rgba(220, 38, 38, 0.4)',
               padding: '6px 12px',
               fontWeight: 700,
+              fontSize: '0.75rem',
               borderRadius: 'var(--radius-sm)',
-              background: 'rgba(220, 38, 38, 0.05)'
+              background: 'rgba(220, 38, 38, 0.05)',
+              cursor: 'pointer'
             }}
             title="Lock and return to Employee Kiosk screen"
           >

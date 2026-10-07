@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { FileText, Search, Download, ShieldCheck, ShieldAlert, Radio, Eye, Filter, Calendar, Camera, Trash2, RefreshCw } from 'lucide-react';
+import DateRangeFilter from './DateRangeFilter';
+import { isWithinDateRange, computePresetDates } from '../utils/dateFilterUtils';
 
 export default function EventsManager({ events = [], onSelectEvidence, adminToken, userRole = 'admin', socket, onDeleteEvent, onClearEvents }) {
   const [localEvents, setLocalEvents] = useState([]);
@@ -8,14 +10,52 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
   const [searchQuery, setSearchQuery] = useState('');
   const [authFilter, setAuthFilter] = useState('ALL'); // ALL, AUTHORIZED, UNAUTHORIZED, RFID_MISSING, RFID_INVALID
   const [statusFilter, setStatusFilter] = useState('ALL'); // ALL, OPEN, RESOLVED
-  const [dateFilter, setDateFilter] = useState('ALL'); // ALL, TODAY, WEEK
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [appliedStartDate, setAppliedStartDate] = useState('');
+  const [appliedEndDate, setAppliedEndDate] = useState('');
+  const [quickPreset, setQuickPreset] = useState('ALL');
+
+  const getLocalDateStr = (ts) => {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts).slice(0, 10);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch {
+      return String(ts).slice(0, 10);
+    }
+  };
+
+  const handleApplyDateRange = () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    if (!startDate && !endDate) {
+      setQuickPreset('ALL');
+    } else {
+      setQuickPreset('CUSTOM');
+    }
+  };
+
+  const handleQuickPreset = (e) => {
+    const preset = e.target.value;
+    setQuickPreset(preset);
+    const { startDate: s, endDate: end } = computePresetDates(preset);
+    setStartDate(s);
+    setEndDate(end);
+    setAppliedStartDate(s);
+    setAppliedEndDate(end);
+  };
 
   // Direct fetch from backend to ensure events are never stale
   const fetchEvents = useCallback(async () => {
     setIsLoading(true);
     try {
       const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token') || '';
-      const res = await fetch('/api/events?limit=200', {
+      const res = await fetch('/api/events?limit=500', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -107,15 +147,17 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
     return Array.from(map.values()).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
   }, [events, localEvents]);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-
   const filteredEvents = combinedEvents.filter((ev) => {
     if (deletedIds.has(ev.id)) return false;
 
-    // Date filtering
-    if (dateFilter === 'TODAY' && (!ev.timestamp || !ev.timestamp.startsWith(todayStr))) return false;
-    if (dateFilter === 'WEEK' && (!ev.timestamp || ev.timestamp < sevenDaysAgo)) return false;
+    // Date filtering (Range: Dates : [startDate] To [endDate] [Show..])
+    if (appliedStartDate || appliedEndDate) {
+      const rawDate = ev.timestamp || '';
+      if (!rawDate) return false;
+      const itemDate = getLocalDateStr(rawDate);
+      if (appliedStartDate && itemDate < appliedStartDate) return false;
+      if (appliedEndDate && itemDate > appliedEndDate) return false;
+    }
 
     // Authorization filtering
     if (authFilter === 'AUTHORIZED' && ev.authorization_status !== 'AUTHORIZED') return false;
@@ -142,6 +184,18 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
     }
     return true;
   });
+
+  const hasActiveFilters = searchQuery.trim() !== '' || authFilter !== 'ALL' || statusFilter !== 'ALL' || Boolean(appliedStartDate || appliedEndDate || startDate || endDate);
+  const resetFilters = () => {
+    setSearchQuery('');
+    setAuthFilter('ALL');
+    setStatusFilter('ALL');
+    setStartDate('');
+    setEndDate('');
+    setAppliedStartDate('');
+    setAppliedEndDate('');
+    setQuickPreset('ALL');
+  };
 
   const handleDeleteEvent = async (e, eventId) => {
     if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
@@ -302,18 +356,15 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
           </div>
 
           {/* Date Filter */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)' }}>DATE:</span>
-            <select
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
-              style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-            >
-              <option value="ALL">All Time</option>
-              <option value="TODAY">Today Only</option>
-              <option value="WEEK">Past 7 Days</option>
-            </select>
-          </div>
+          <DateRangeFilter
+            startDate={startDate}
+            endDate={endDate}
+            onStartDateChange={setStartDate}
+            onEndDateChange={setEndDate}
+            onApply={handleApplyDateRange}
+            quickPreset={quickPreset}
+            onQuickPresetChange={handleQuickPreset}
+          />
 
           {/* Authorization Filter */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -323,9 +374,9 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
               onChange={(e) => setAuthFilter(e.target.value)}
               style={{ fontSize: '0.75rem', padding: '6px 10px' }}
             >
-              <option value="ALL">All Authorizations</option>
-              <option value="AUTHORIZED">Authorized</option>
-              <option value="UNAUTHORIZED">Unauthorized</option>
+              <option value="ALL">All Events (Everything)</option>
+              <option value="AUTHORIZED">Authorized Placements</option>
+              <option value="UNAUTHORIZED">Unauthorized Placements</option>
               <option value="RFID_MISSING">RFID Missing (No RFID)</option>
               <option value="RFID_INVALID">RFID Invalid / Expired</option>
             </select>
@@ -339,11 +390,31 @@ export default function EventsManager({ events = [], onSelectEvidence, adminToke
               onChange={(e) => setStatusFilter(e.target.value)}
               style={{ fontSize: '0.75rem', padding: '6px 10px' }}
             >
-              <option value="ALL">All Statuses</option>
+              <option value="ALL">All Statuses (Everything)</option>
               <option value="OPEN">Open Incidents</option>
               <option value="RESOLVED">Resolved</option>
             </select>
           </div>
+
+          {/* Reset Filters Shortcut */}
+          {hasActiveFilters && (
+            <button
+              onClick={resetFilters}
+              style={{
+                fontSize: '0.72rem',
+                color: 'var(--brand-red)',
+                background: 'rgba(220, 38, 38, 0.08)',
+                border: '1px solid rgba(220, 38, 38, 0.25)',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 600
+              }}
+              title="Reset all filters to show everything"
+            >
+              Reset Filters
+            </button>
+          )}
 
           <span style={{
             fontSize: '0.72rem',

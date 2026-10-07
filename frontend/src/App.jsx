@@ -2,8 +2,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { io } from 'socket.io-client';
 import KioskView from './components/KioskView';
 import AdminLoginModal from './components/AdminLoginModal';
+import UserDashboard from './components/UserDashboard';
 import PlacementsManager from './components/PlacementsManager';
 import Header from './components/Header';
+import Sidebar from './components/Sidebar';
 import CCTVMonitor from './components/CCTVMonitor';
 import EvidenceModal from './components/EvidenceModal';
 import SettingsModal from './components/SettingsModal';
@@ -11,17 +13,29 @@ import ReportingPanel from './components/ReportingPanel';
 import AlertPanel from './components/AlertPanel';
 import EventsManager from './components/EventsManager';
 import KPIMetricsBar from './components/KPIMetricsBar';
-import EmployeeManager from './components/EmployeeManager';
+import UserManager from './components/UserManager';
 import { sounds } from './utils/audio';
 
 const SOCKET_SERVER = 'http://localhost:3001';
 
 export default function App() {
-  // Primary Architecture Mode: 'kiosk' (Employee-Facing) | 'admin' (Administrator & Operator Portal)
-  const [viewMode, setViewMode] = useState('kiosk');
+  // Primary Architecture Mode: 'kiosk' (Standby) | 'user' (Employee Dashboard) | 'admin' (Supervisor & Admin Portal)
+  const [viewMode, setViewMode] = useState(() => {
+    const role = sessionStorage.getItem('redtag_user_role') || localStorage.getItem('redtag_user_role');
+    const token = sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
+    if (token && role === 'user') return 'user';
+    return 'kiosk';
+  });
   const [adminToken, setAdminToken] = useState(() => sessionStorage.getItem('redtag_admin_token') || null);
   const [userRole, setUserRole] = useState(() => sessionStorage.getItem('redtag_user_role') || 'admin');
-  const [loginRole, setLoginRole] = useState('operator');
+  const [userProfile, setUserProfile] = useState(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('redtag_user_profile') || localStorage.getItem('redtag_user_profile') || 'null');
+    } catch {
+      return null;
+    }
+  });
+  const [loginRole, setLoginRole] = useState('supervisor');
   const [showAdminLogin, setShowAdminLogin] = useState(false);
 
   // Core System State
@@ -44,10 +58,10 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [currentActivity, setCurrentActivity] = useState('Waiting for an object...');
 
-  // Admin Tab Navigation
-  const [activeTab, setActiveTab] = useState('placements'); // 'placements' | 'monitor' | 'events' | 'employees' | 'reports'
+  // Admin Tab Navigation - Live Monitor is the primary default view
+  const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'placements' | 'events' | 'employees' | 'reports'
   useEffect(() => {
-    if (activeTab === 'alerts') setActiveTab('placements');
+    if (activeTab === 'alerts') setActiveTab('monitor');
   }, [activeTab]);
 
   const [unauthorizedAlert, setUnauthorizedAlert] = useState(null);
@@ -56,16 +70,16 @@ export default function App() {
 
   const cctvMonitorRef = useRef(null);
 
-  const handleCaptureCurrentFrame = useCallback(() => {
+  const handleCaptureCurrentFrame = useCallback((options) => {
     if (cctvMonitorRef.current && typeof cctvMonitorRef.current.captureCurrentFrame === 'function') {
-      return cctvMonitorRef.current.captureCurrentFrame();
+      return cctvMonitorRef.current.captureCurrentFrame(options);
     }
     return null;
   }, []);
 
-  const handleGetActiveTracker = useCallback(() => {
+  const handleGetActiveTracker = useCallback((options) => {
     if (cctvMonitorRef.current && typeof cctvMonitorRef.current.getActiveTracker === 'function') {
-      return cctvMonitorRef.current.getActiveTracker();
+      return cctvMonitorRef.current.getActiveTracker(options);
     }
     return null;
   }, []);
@@ -120,11 +134,11 @@ export default function App() {
     }
   }, [activeTab, viewMode, fetchAdminData]);
 
-  // Initial Verification: Check if user already holds a valid admin session or requested #admin
+  // Initial Verification: Check if user already holds a valid admin session or requested #admin / /operator
   useEffect(() => {
     const savedToken = sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
     const urlParams = new URLSearchParams(window.location.search);
-    const wantsAdmin = urlParams.get('view') === 'admin' || window.location.pathname.includes('/admin') || window.location.hash === '#admin';
+    const wantsAdmin = urlParams.get('view') === 'admin' || window.location.pathname.includes('/admin') || window.location.hash === '#admin' || window.location.pathname.includes('/operator');
 
     if (savedToken) {
       fetch('/api/admin/verify', {
@@ -162,6 +176,16 @@ export default function App() {
       setShowAdminLogin(true);
     }
   }, [fetchAdminData]);
+
+  // Always fetch system settings on initial mount so settings are populated immediately
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(r => r.json())
+      .then(data => {
+        if (data && typeof data === 'object') setSettings(data);
+      })
+      .catch(() => {});
+  }, []);
 
   // Connect Socket.IO for real-time events
   useEffect(() => {
@@ -296,6 +320,13 @@ export default function App() {
       }
     });
 
+    // Real-Time System Settings Synchronization across all connected dashboards
+    s.on('settings_updated', (updatedSettings) => {
+      if (updatedSettings && typeof updatedSettings === 'object') {
+        setSettings(updatedSettings);
+      }
+    });
+
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSocket(s);
 
@@ -320,31 +351,58 @@ export default function App() {
   // Handlers
   const handleSaveROI = async (newROI) => {
     setROI(newROI);
-    if (!adminToken) return;
-    await fetch('/api/settings', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${adminToken}`
-      },
-      body: JSON.stringify({ roi: newROI })
-    });
+    const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    try {
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ roi: newROI })
+      });
+    } catch (err) {
+      console.warn('ROI save error:', err);
+    }
   };
 
   const handleSaveSettings = async (newSettings) => {
     setSettings(newSettings);
-    if (!adminToken) return;
-    const res = await fetch('/api/settings', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${adminToken}`
-      },
-      body: JSON.stringify(newSettings)
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.settings) setSettings(data.settings);
+    const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(newSettings)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.settings) setSettings(data.settings);
+        return { success: true, settings: data.settings };
+      } else {
+        const err = await res.json().catch(() => ({}));
+        return { success: false, error: err.error || 'Failed to update settings.' };
+      }
+    } catch (err) {
+      console.error('Error saving settings:', err);
+      return { success: false, error: err.message || 'Network error saving settings.' };
+    }
+  };
+
+  const handleSimulatePlacement = async (objectType = 'Box', insideROI = true) => {
+    try {
+      const res = await fetch('/api/simulate/placement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objectType, insideROI })
+      });
+      return await res.json();
+    } catch (err) {
+      console.error('Simulate placement error:', err);
+      return { error: err.message };
     }
   };
 
@@ -387,7 +445,7 @@ export default function App() {
     }
   };
 
-  // Logout from Admin/Operator and return to Kiosk Mode (Rule 5 & 7)
+  // Logout from Admin/Operator/User and return to Kiosk Mode (Rule 5 & 7)
   const handleLogoutToKiosk = async () => {
     if (adminToken) {
       await fetch('/api/admin/logout', {
@@ -397,8 +455,13 @@ export default function App() {
     }
     sessionStorage.removeItem('redtag_admin_token');
     sessionStorage.removeItem('redtag_user_role');
+    sessionStorage.removeItem('redtag_user_profile');
+    localStorage.removeItem('redtag_admin_token');
+    localStorage.removeItem('redtag_user_role');
+    localStorage.removeItem('redtag_user_profile');
     setAdminToken(null);
     setUserRole('admin');
+    setUserProfile(null);
     setViewMode('kiosk');
     setShowAdminLogin(false);
     setEvents([]);
@@ -407,50 +470,60 @@ export default function App() {
   };
 
   // ─────────────────────────────────────────────────────────────
-  // VIEW MODE 1 & 2: EMPLOYEE KIOSK & ADMIN/OPERATOR PORTAL
+  // VIEW MODES: 1. KIOSK | 2. USER DASHBOARD | 3. SUPERVISOR & ADMIN
   // ─────────────────────────────────────────────────────────────
 
   return (
     <>
       {/* ─────────────────────────────────────────────────────────────
-          VIEW MODE 1: EMPLOYEE KIOSK (Rule 1 & 2: Zero Admin Leaks)
+          VIEW MODE 1: STANDBY KIOSK (Rule 1 & 2: Zero Admin Leaks)
       ────────────────────────────────────────────────────────────── */}
-      <div style={{ display: viewMode === 'kiosk' ? 'block' : 'none', minHeight: '100vh' }}>
+      <div style={{ display: viewMode === 'kiosk' ? 'block' : 'none', minHeight: '100vh', background: 'var(--bg-core)' }}>
         <KioskView
           socket={socket}
+          isPaused={showAdminLogin}
           onCaptureCurrentFrame={handleCaptureCurrentFrame}
           onGetActiveTracker={handleGetActiveTracker}
-          onOpenAdmin={() => {
-            setLoginRole('admin');
-            if (adminToken) {
-              setViewMode('admin');
-              fetchAdminData(adminToken);
-            } else {
-              setShowAdminLogin(true);
-            }
+          onOpenUser={() => {
+            setLoginRole('user');
+            setShowAdminLogin(true);
+          }}
+          onOpenSupervisor={() => {
+            setLoginRole('supervisor');
+            setShowAdminLogin(true);
           }}
           onOpenOperator={() => {
-            setLoginRole('operator');
-            if (adminToken) {
-              setViewMode('admin');
-              fetchAdminData(adminToken);
-            } else {
-              setShowAdminLogin(true);
-            }
+            setLoginRole('supervisor');
+            setShowAdminLogin(true);
+          }}
+          onOpenAdmin={() => {
+            setLoginRole('admin');
+            setShowAdminLogin(true);
           }}
         />
 
         {showAdminLogin && (
           <AdminLoginModal
+            socket={socket}
             initialRole={loginRole}
             onLoginSuccess={(token, user) => {
               setAdminToken(token);
               const resolvedRole = (user?.role || loginRole || 'admin').toLowerCase();
               setUserRole(resolvedRole);
+              setUserProfile(user);
               sessionStorage.setItem('redtag_user_role', resolvedRole);
+              if (user) {
+                sessionStorage.setItem('redtag_user_profile', JSON.stringify(user));
+                localStorage.setItem('redtag_user_profile', JSON.stringify(user));
+              }
               setShowAdminLogin(false);
-              setViewMode('admin');
-              fetchAdminData(token);
+              if (resolvedRole === 'user') {
+                setViewMode('user');
+              } else {
+                setActiveTab('monitor');
+                setViewMode('admin');
+                fetchAdminData(token);
+              }
             }}
             onCancel={() => setShowAdminLogin(false)}
           />
@@ -458,21 +531,60 @@ export default function App() {
       </div>
 
       {/* ─────────────────────────────────────────────────────────────
+          VIEW MODE: EMPLOYEE DASHBOARD (Strict Role Isolation)
+      ────────────────────────────────────────────────────────────── */}
+      {viewMode === 'user' && (
+        <UserDashboard
+          user={userProfile}
+          token={adminToken}
+          onLogout={handleLogoutToKiosk}
+          socket={socket}
+        />
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
           VIEW MODE 2: ADMINISTRATOR PORTAL (Rule 3, 4, & 10)
       ────────────────────────────────────────────────────────────── */}
-      <div style={{ display: viewMode === 'admin' ? 'flex' : 'none', minHeight: '100vh', flexDirection: 'column', background: 'var(--bg-core)' }}>
-        {/* Global Admin Header */}
-        <Header
-          systemStatus={systemStatus}
-          activeToken={activeToken}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onLogoutToKiosk={handleLogoutToKiosk}
+      <div
+        style={{
+          display: 'flex',
+          minHeight: '100vh',
+          flexDirection: 'row',
+          background: 'var(--bg-core)',
+          ...(viewMode === 'admin'
+            ? {}
+            : {
+                position: 'fixed',
+                top: 0,
+                left: '-99999px',
+                width: '100vw',
+                height: '100vh',
+                opacity: 0,
+                pointerEvents: 'none',
+                zIndex: -9999
+              })
+        }}
+      >
+        {/* Left Vertical Sidebar Navigation (Ordered Top-to-Bottom) */}
+        <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
-          cameraActive={cameraActive}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          onLogoutToKiosk={handleLogoutToKiosk}
           userRole={userRole}
-          setUserRole={setUserRole}
         />
+
+        {/* Content Column: Top Header + Main Body */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          {/* Global Header with Highlighted Larger Nokia Logo */}
+          <Header
+            systemStatus={systemStatus}
+            activeToken={activeToken}
+            onLogoutToKiosk={handleLogoutToKiosk}
+            activeTab={activeTab}
+            cameraActive={cameraActive}
+            userRole={userRole}
+          />
 
         {/* Main Admin Operational Container */}
         <main style={{
@@ -504,8 +616,23 @@ export default function App() {
             />
           </div>
 
-          {/* Tab 2: Live Monitor (CCTVMonitor remains mounted persistently) */}
-          <div style={{ display: activeTab === 'monitor' ? 'block' : 'none' }}>
+          {/* Tab 2: Live Monitor (CCTVMonitor remains mounted persistently and alive) */}
+          <div
+            style={{
+              display: 'block',
+              ...(activeTab === 'monitor'
+                ? {}
+                : {
+                    position: 'fixed',
+                    top: 0,
+                    left: '-99999px',
+                    width: '100%',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    zIndex: -9999
+                  })
+            }}
+          >
             {/* Four Primary KPI Cards */}
             <KPIMetricsBar
               events={events}
@@ -536,8 +663,10 @@ export default function App() {
                 onPolygonChange={(newPoly) => setPolygonVertices(newPoly)}
                 onCameraStateChange={setCameraActive}
                 onActivityChange={setCurrentActivity}
-                isActive={viewMode === 'admin' && activeTab === 'monitor'}
+                isActive={true}
                 socket={socket}
+                settings={settings}
+                userRole={userRole}
               />
             </div>
           </div>
@@ -557,13 +686,11 @@ export default function App() {
             />
           </div>
 
-          {/* Tab 5: Employees Manager */}
-          <div style={{ display: activeTab === 'employees' ? 'block' : 'none' }}>
-            <EmployeeManager
-              employees={employees}
+          {/* Tab 5: Users & RFID Manager (Admin Role) */}
+          <div style={{ display: (activeTab === 'users' || activeTab === 'employees') ? 'block' : 'none' }}>
+            <UserManager
+              adminToken={adminToken}
               userRole={userRole}
-              onSaveEmployee={handleSaveEmployee}
-              onDeleteEmployee={handleDeleteEmployee}
               onSimulateRFID={handleSimulateRFID}
             />
           </div>
@@ -573,7 +700,7 @@ export default function App() {
             <ReportingPanel
               events={events}
               adminToken={adminToken}
-              defaultEmail={settings?.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}
+              defaultEmail={settings?.alert_email_recipient || 'safety-admin@company.com'}
             />
           </div>
         </main>
@@ -593,8 +720,13 @@ export default function App() {
           systemStatus={systemStatus}
           onSaveSettings={handleSaveSettings}
           onClose={() => setIsSettingsOpen(false)}
+          userRole={userRole}
+          activeToken={activeToken}
+          onSimulateRFID={handleSimulateRFID}
+          onSimulatePlacement={handleSimulatePlacement}
         />
       )}
+        </div>
       </div>
     </>
   );

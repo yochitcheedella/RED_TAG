@@ -1,8 +1,14 @@
 import React, { useState } from 'react';
 import { FileSpreadsheet, Archive, Download, CheckCircle2, AlertTriangle, Send, Mail, Calendar } from 'lucide-react';
+import DateRangeFilter from './DateRangeFilter';
+import { isWithinDateRange, computePresetDates } from '../utils/dateFilterUtils';
 
 export default function ReportingPanel({ events = [], adminToken, defaultEmail }) {
-  const [dateRange, setDateRange] = useState('ALL'); // 'TODAY', 'WEEK', 'MONTH', 'ALL'
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [appliedStartDate, setAppliedStartDate] = useState('');
+  const [appliedEndDate, setAppliedEndDate] = useState('');
+  const [quickPreset, setQuickPreset] = useState('ALL');
   const [recipientEmail, setRecipientEmail] = useState(() => {
     return localStorage.getItem('redtag_report_recipient') || '';
   });
@@ -11,18 +17,43 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
   const [emailStatus, setEmailStatus] = useState(null);
   const [emailFeedback, setEmailFeedback] = useState('');
 
-  // Filter events based on date range
-  const now = Date.now();
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const getLocalDateStr = (ts) => {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts).slice(0, 10);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch {
+      return String(ts).slice(0, 10);
+    }
+  };
+
+  const handleApplyDateRange = () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    if (!startDate && !endDate) {
+      setQuickPreset('ALL');
+    } else {
+      setQuickPreset('CUSTOM');
+    }
+  };
+
+  const handleQuickPreset = (e) => {
+    const preset = e.target.value;
+    setQuickPreset(preset);
+    const { startDate: s, endDate: end } = computePresetDates(preset);
+    setStartDate(s);
+    setEndDate(end);
+    setAppliedStartDate(s);
+    setAppliedEndDate(end);
+  };
 
   const filteredEvents = events.filter((e) => {
     if (e.event_type !== 'AUTHORIZED_PLACEMENT' && e.event_type !== 'UNAUTHORIZED_PLACEMENT') return false;
-    if (dateRange === 'TODAY') return e.timestamp && e.timestamp.startsWith(todayStr);
-    if (dateRange === 'WEEK') return e.timestamp && e.timestamp >= sevenDaysAgo;
-    if (dateRange === 'MONTH') return e.timestamp && e.timestamp >= thirtyDaysAgo;
-    return true;
+    return isWithinDateRange(e.timestamp, appliedStartDate, appliedEndDate);
   });
 
   const totalPlacements = filteredEvents.length;
@@ -125,21 +156,17 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
             </p>
           </div>
 
-          {/* Date Range Selector */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Calendar size={15} color="var(--text-muted)" />
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>RANGE:</span>
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-              style={{ fontSize: '0.8rem', padding: '6px 12px' }}
-            >
-              <option value="ALL">All Time</option>
-              <option value="TODAY">Today Only</option>
-              <option value="WEEK">Past 7 Days</option>
-              <option value="MONTH">Past 30 Days</option>
-            </select>
-          </div>
+          {/* Exact Date Filter requested by user: Dates : [start] To [end] [Show..] */}
+          {/* Date Filter */}
+          <DateRangeFilter
+            startDate={startDate}
+            endDate={endDate}
+            onStartDateChange={setStartDate}
+            onEndDateChange={setEndDate}
+            onApply={handleApplyDateRange}
+            quickPreset={quickPreset}
+            onQuickPresetChange={handleQuickPreset}
+          />
         </div>
 
         {/* 4 Report Summary KPI Cards */}
@@ -319,7 +346,7 @@ export default function ReportingPanel({ events = [], adminToken, defaultEmail }
             type="text"
             value={recipientEmail}
             onChange={(e) => setRecipientEmail(e.target.value)}
-            placeholder="Enter recipient email (e.g. nishapanneerv@gmail.com)"
+            placeholder="Enter recipient email (e.g. safety-officer@company.com)"
             style={{ flex: 1 }}
           />
           <button

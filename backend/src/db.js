@@ -1,10 +1,15 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dbPath = path.resolve(__dirname, '../data/redtag.db');
+
+if (!fs.existsSync(path.dirname(dbPath))) {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+}
 
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
@@ -138,6 +143,20 @@ db.exec(`
     event_id TEXT,
     object_id TEXT
   );
+
+  -- 3-Tier RBAC Users: User (Employee), Supervisor, Admin
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user', -- 'user' | 'supervisor' | 'admin'
+    name TEXT NOT NULL,
+    employee_id TEXT,
+    rfid_uid TEXT,
+    department TEXT DEFAULT 'General',
+    status TEXT DEFAULT 'ACTIVE', -- 'ACTIVE' | 'DISABLED'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Migration to ensure existing DB files get new columns if they don't exist
@@ -199,7 +218,7 @@ const defaultSettings = {
   baud_rate: '9600',
   camera_mode: 'webcam',
   capture_authorized_evidence: 'true',
-  alert_email_recipient: 'yochitcheedella@gmail.com, nishapanneerv@gmail.com',
+  alert_email_recipient: process.env.ALERT_EMAIL_RECIPIENT || 'safety-admin@company.com',
   admin_username: 'admin',
   admin_password: 'admin123'
 };
@@ -211,11 +230,324 @@ for (const [key, val] of Object.entries(defaultSettings)) {
   setSystemSettingStmt.run(key, val);
 }
 
-// Migrate any existing 5000ms auth window to 60000ms (60 seconds)
+// Default 3-Tier RBAC Users Seeding
+const defaultUsers = [
+  {
+    id: 'USR-ADMIN',
+    username: 'admin',
+    password: process.env.ADMIN_PASSWORD || 'admin123',
+    role: 'admin',
+    name: 'System Administrator',
+    employee_id: 'EMP-ADM-001',
+    rfid_uid: 'ADM001',
+    department: 'IT & Infrastructure',
+    status: 'ACTIVE'
+  },
+  {
+    id: 'USR-SUPERVISOR',
+    username: 'supervisor',
+    password: process.env.SUPERVISOR_PASSWORD || 'supervisor123',
+    role: 'supervisor',
+    name: 'SOC Area Supervisor',
+    employee_id: 'EMP-SUP-001',
+    rfid_uid: 'SUP001',
+    department: 'Security Operations',
+    status: 'ACTIVE'
+  },
+  {
+    id: 'USR-OPERATOR',
+    username: 'operator',
+    password: process.env.OPERATOR_PASSWORD || 'operator123',
+    role: 'supervisor',
+    name: 'Facility Supervisor',
+    employee_id: 'EMP-OPR-001',
+    rfid_uid: 'OPR001',
+    department: 'Facility Operations',
+    status: 'ACTIVE'
+  },
+  {
+    id: 'USR-EMPLOYEE-A472',
+    username: 'user',
+    password: 'user123',
+    role: 'user',
+    name: 'Sarah Jenkins',
+    employee_id: 'EMP-TEST-A472',
+    rfid_uid: 'A472198C',
+    department: 'Engineering',
+    status: 'ACTIVE'
+  },
+  {
+    id: 'USR-EMPLOYEE-B721',
+    username: 'emp002',
+    password: 'user123',
+    role: 'user',
+    name: 'Employee 002',
+    employee_id: 'EMP-TEST-B721',
+    rfid_uid: 'B7214492',
+    department: 'Operations',
+    status: 'ACTIVE'
+  }
+];
+
 try {
-  db.prepare("UPDATE settings SET value = '60000' WHERE key = 'auth_window_ms' AND value = '5000'").run();
+  const insertUserStmt = db.prepare(`
+    INSERT OR IGNORE INTO users (id, username, password, role, name, employee_id, rfid_uid, department, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const u of defaultUsers) {
+    insertUserStmt.run(u.id, u.username, u.password, u.role, u.name, u.employee_id, u.rfid_uid, u.department, u.status);
+  }
 } catch (e) {
-  console.warn('Settings migration note:', e.message);
+  console.warn('User table seed note:', e.message);
+}
+
+// User Management Queries
+export function getAllUsers() {
+  return db.prepare('SELECT id, username, role, name, employee_id, rfid_uid, department, status, created_at FROM users ORDER BY created_at DESC').all();
+}
+
+export function getUserById(id) {
+  return db.prepare('SELECT id, username, role, name, employee_id, rfid_uid, department, status, created_at FROM users WHERE id = ?').get(id);
+}
+
+export function getUserByUsername(username) {
+  if (!username) return null;
+  return db.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').get(username.trim());
+}
+
+export function getUserByRFID(rfid) {
+  if (!rfid) return null;
+  const cleanRFID = rfid.trim().toUpperCase();
+  return db.prepare('SELECT * FROM users WHERE UPPER(rfid_uid) = ?').get(cleanRFID);
+}
+
+export function createUser({ id, username, password, role = 'user', name, employee_id, rfid_uid, department, status = 'ACTIVE' }) {
+  const uid = id || `USR-${Date.now()}`;
+  db.prepare(`
+    INSERT INTO users (id, username, password, role, name, employee_id, rfid_uid, department, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    uid,
+    username.trim().toLowerCase(),
+    password || 'user123',
+    (role || 'user').toLowerCase(),
+    name || username,
+    employee_id || null,
+    rfid_uid ? rfid_uid.trim().toUpperCase() : null,
+    department || 'General',
+    status || 'ACTIVE'
+  );
+  return getUserById(uid);
+}
+
+export function updateUser(id, updates = {}) {
+  const current = getUserById(id);
+  if (!current) return null;
+
+  const role = updates.role !== undefined ? updates.role.toLowerCase() : current.role;
+  const name = updates.name !== undefined ? updates.name : current.name;
+  const department = updates.department !== undefined ? updates.department : current.department;
+  const status = updates.status !== undefined ? updates.status : current.status;
+  const employee_id = updates.employee_id !== undefined ? updates.employee_id : current.employee_id;
+  const rfid_uid = updates.rfid_uid !== undefined ? (updates.rfid_uid ? updates.rfid_uid.trim().toUpperCase() : null) : current.rfid_uid;
+
+  if (updates.password) {
+    db.prepare(`
+      UPDATE users SET role = ?, name = ?, department = ?, status = ?, employee_id = ?, rfid_uid = ?, password = ?
+      WHERE id = ?
+    `).run(role, name, department, status, employee_id, rfid_uid, updates.password, id);
+  } else {
+    db.prepare(`
+      UPDATE users SET role = ?, name = ?, department = ?, status = ?, employee_id = ?, rfid_uid = ?
+      WHERE id = ?
+    `).run(role, name, department, status, employee_id, rfid_uid, id);
+  }
+  return getUserById(id);
+}
+
+export function deleteUser(id) {
+  return db.prepare('DELETE FROM users WHERE id = ?').run(id);
+}
+
+// User-Specific Placements (Rule: Employee sees strictly only their own placement data)
+export function getUserPlacements(identifier, limit = 100) {
+  if (!identifier) return [];
+  const ids = [];
+  if (typeof identifier === 'object') {
+    if (identifier.rfid_uid) ids.push(String(identifier.rfid_uid).trim().toUpperCase());
+    if (identifier.employee_id) ids.push(String(identifier.employee_id).trim().toUpperCase());
+    if (identifier.name) ids.push(String(identifier.name).trim().toUpperCase());
+    if (identifier.username) ids.push(String(identifier.username).trim().toUpperCase());
+  } else {
+    ids.push(String(identifier).trim().toUpperCase());
+  }
+  if (ids.length === 0) return [];
+
+  const placeholders = ids.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT 
+      o.id as object_id,
+      o.id as placement_id,
+      o.event_id,
+      COALESCE(o.item_name, o.object_type) as item_name,
+      o.serial_number,
+      o.description,
+      o.placement_reason,
+      COALESCE(o.placement_duration_min, 5) as placement_duration_min,
+      COALESCE(o.placement_duration_min, 5) as duration_minutes,
+      COALESCE(o.placement_duration_min, 5) as duration_min,
+      COALESCE(o.department, 'General') as department,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as registered_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as placed_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as created_at,
+      o.first_seen,
+      o.last_seen,
+      o.state,
+      o.authorization_status,
+      o.authorization_status as status,
+      o.employee_name,
+      o.employee_id,
+      o.rfid_uid,
+      o.evidence_image,
+      o.camera_id
+    FROM objects o
+    WHERE (
+      (o.rfid_uid IS NOT NULL AND UPPER(o.rfid_uid) IN (${placeholders}))
+      OR (o.employee_id IS NOT NULL AND UPPER(o.employee_id) IN (${placeholders}))
+      OR (o.employee_name IS NOT NULL AND UPPER(o.employee_name) IN (${placeholders}))
+    )
+    UNION ALL
+    SELECT
+      kr.id as object_id,
+      kr.id as placement_id,
+      kr.event_id,
+      kr.item_name,
+      kr.serial_number,
+      kr.description,
+      kr.reason as placement_reason,
+      COALESCE(kr.duration_min, 5) as placement_duration_min,
+      COALESCE(kr.duration_min, 5) as duration_minutes,
+      COALESCE(kr.duration_min, 5) as duration_min,
+      COALESCE(kr.department, 'General') as department,
+      kr.created_at as registered_at,
+      COALESCE(kr.placed_at, kr.created_at) as placed_at,
+      kr.created_at as created_at,
+      kr.created_at as first_seen,
+      COALESCE(kr.placed_at, kr.created_at) as last_seen,
+      CASE WHEN kr.status = 'PLACED' THEN 'PRESENT' ELSE 'PENDING' END as state,
+      CASE WHEN kr.status = 'EXPIRED' THEN 'EXPIRED' WHEN kr.status = 'PLACED' THEN 'AUTHORIZED' ELSE 'PENDING' END as authorization_status,
+      CASE WHEN kr.status = 'EXPIRED' THEN 'EXPIRED' WHEN kr.status = 'PLACED' THEN 'AUTHORIZED' ELSE 'PENDING' END as status,
+      kr.employee_name,
+      kr.employee_id,
+      kr.rfid_uid,
+      NULL as evidence_image,
+      'CAM-01-REDTAG' as camera_id
+    FROM kiosk_registrations kr
+    WHERE (
+      (kr.rfid_uid IS NOT NULL AND UPPER(kr.rfid_uid) IN (${placeholders}))
+      OR (kr.employee_id IS NOT NULL AND UPPER(kr.employee_id) IN (${placeholders}))
+      OR (kr.employee_name IS NOT NULL AND UPPER(kr.employee_name) IN (${placeholders}))
+    )
+    AND (kr.object_id IS NULL OR kr.object_id NOT IN (SELECT id FROM objects))
+    AND (kr.event_id IS NULL OR kr.event_id NOT IN (SELECT COALESCE(event_id, '') FROM objects WHERE event_id IS NOT NULL))
+    ORDER BY registered_at DESC
+    LIMIT ?
+  `).all(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, limit);
+}
+
+export function getUserActivePlacement(identifier) {
+  if (!identifier) return null;
+  const ids = [];
+  if (typeof identifier === 'object') {
+    if (identifier.rfid_uid) ids.push(String(identifier.rfid_uid).trim().toUpperCase());
+    if (identifier.employee_id) ids.push(String(identifier.employee_id).trim().toUpperCase());
+    if (identifier.name) ids.push(String(identifier.name).trim().toUpperCase());
+    if (identifier.username) ids.push(String(identifier.username).trim().toUpperCase());
+  } else {
+    ids.push(String(identifier).trim().toUpperCase());
+  }
+  if (ids.length === 0) return null;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const activeObj = db.prepare(`
+    SELECT 
+      o.id as object_id,
+      o.id as placement_id,
+      o.event_id,
+      COALESCE(o.item_name, o.object_type) as item_name,
+      o.serial_number,
+      o.description,
+      o.placement_reason,
+      COALESCE(o.placement_duration_min, 5) as placement_duration_min,
+      COALESCE(o.placement_duration_min, 5) as duration_minutes,
+      COALESCE(o.placement_duration_min, 5) as duration_min,
+      COALESCE(o.department, 'General') as department,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as registered_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as placed_at,
+      COALESCE(o.registered_at, o.last_seen, o.first_seen) as created_at,
+      o.first_seen,
+      o.last_seen,
+      o.state,
+      o.authorization_status,
+      o.authorization_status as status,
+      o.employee_name,
+      o.employee_id,
+      o.rfid_uid,
+      o.evidence_image,
+      o.camera_id
+    FROM objects o
+    WHERE o.state = 'PRESENT'
+      AND (
+        (o.rfid_uid IS NOT NULL AND UPPER(o.rfid_uid) IN (${placeholders}))
+        OR (o.employee_id IS NOT NULL AND UPPER(o.employee_id) IN (${placeholders}))
+        OR (o.employee_name IS NOT NULL AND UPPER(o.employee_name) IN (${placeholders}))
+      )
+    ORDER BY o.last_seen DESC, o.rowid DESC
+    LIMIT 1
+  `).get(...ids, ...ids, ...ids);
+
+  if (activeObj) return activeObj;
+
+  const pendingReg = db.prepare(`
+    SELECT 
+      id,
+      id as object_id,
+      id as placement_id,
+      rfid_uid,
+      employee_id,
+      employee_name,
+      department,
+      item_name,
+      serial_number,
+      description,
+      reason as placement_reason,
+      duration_min as placement_duration_min,
+      duration_min as duration_minutes,
+      duration_min,
+      status,
+      'PENDING' as authorization_status,
+      'PENDING_CONFIRMATION' as state,
+      created_at,
+      created_at as registered_at,
+      created_at as placed_at,
+      expires_at
+    FROM kiosk_registrations
+    WHERE status = 'PENDING_PLACEMENT'
+      AND (
+        (rfid_uid IS NOT NULL AND UPPER(rfid_uid) IN (${placeholders}))
+        OR (employee_id IS NOT NULL AND UPPER(employee_id) IN (${placeholders}))
+        OR (employee_name IS NOT NULL AND UPPER(employee_name) IN (${placeholders}))
+      )
+      AND datetime(expires_at) > datetime('now')
+    ORDER BY created_at DESC LIMIT 1
+  `).get(...ids, ...ids, ...ids);
+
+  return pendingReg || null;
+}
+
+export function toggleEmployeeStatus(id, isAuthorized) {
+  db.prepare('UPDATE employees SET is_authorized = ? WHERE id = ?').run(isAuthorized ? 1 : 0, id);
+  return db.prepare('SELECT * FROM employees WHERE id = ?').get(id);
 }
 
 // Employee registry is populated via Admin Portal or direct user registration
@@ -695,31 +1027,30 @@ export function cancelKioskRegistration(regId) {
   db.prepare("UPDATE kiosk_registrations SET status = 'CANCELLED' WHERE id = ?").run(regId);
 }
 
-export function getPlacements(limit = 100) {
+export function getPlacements(limit = 200) {
   return db.prepare(`
     SELECT 
       o.id as object_id,
       o.event_id,
-      COALESCE(o.item_name, o.object_type) as item_name,
+      COALESCE(o.item_name, o.object_type, 'Unlabeled Object') as item_name,
       o.serial_number,
       o.description,
       o.placement_reason,
-      o.placement_duration_min,
+      COALESCE(o.placement_duration_min, 2) as placement_duration_min,
       COALESCE(o.department, (SELECT department FROM employees WHERE UPPER(employees.rfid_uid) = UPPER(o.rfid_uid) LIMIT 1), 'General') as department,
       COALESCE(o.registered_at, o.last_seen, o.first_seen) as registered_at,
       COALESCE(o.registered_at, o.last_seen, o.first_seen) as placed_at,
+      o.first_seen,
       o.last_seen,
+      o.removed_at,
       o.state,
-      o.authorization_status,
-      o.employee_name,
+      COALESCE(o.authorization_status, 'UNAUTHORIZED') as authorization_status,
+      COALESCE(o.employee_name, 'Unidentified') as employee_name,
       o.employee_id,
       o.rfid_uid,
       o.evidence_image,
       o.camera_id
     FROM objects o
-    WHERE o.authorization_status = 'AUTHORIZED'
-      AND o.employee_name IS NOT NULL
-      AND o.employee_name != 'Unidentified'
     ORDER BY COALESCE(o.registered_at, o.last_seen, o.first_seen) DESC, o.rowid DESC
     LIMIT ?
   `).all(limit);
@@ -802,7 +1133,7 @@ export function clearEvents() {
 }
 
 export function getEvents(limit = 100) {
-  return db.prepare('SELECT * FROM events ORDER BY timestamp DESC LIMIT ?').all(limit);
+  return db.prepare('SELECT * FROM events ORDER BY timestamp DESC, rowid DESC LIMIT ?').all(limit);
 }
 
 export function getSetting(key) {

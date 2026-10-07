@@ -63,7 +63,7 @@ class ReportingService {
       }
     } else {
       this.transporter = null;
-      console.log(`ℹ️ [ReportingService] Email alerts target: ${process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}`);
+      console.log(`ℹ️ [ReportingService] Email alerts target: ${process.env.ALERT_EMAIL_RECIPIENT || 'safety-admin@company.com'}`);
     }
   }
 
@@ -260,7 +260,7 @@ class ReportingService {
   async sendEmailAlert(eventData, zipFilePath, recipientEmail = 'plant-manager@factory.com', excelFilePath = null) {
     const recipient = (recipientEmail && recipientEmail.trim()) ||
       process.env.ALERT_EMAIL_RECIPIENT ||
-      'yochitcheedella@gmail.com, nishapanneerv@gmail.com';
+      'safety-admin@company.com';
 
     console.log(`✉️ [Email Dispatch] Sending incident audit bundle to: ${recipient}`);
 
@@ -344,7 +344,7 @@ class ReportingService {
 
   /**
    * Automatically sends an email with the cropped evidence image attached
-   * to yochitcheedella@gmail.com when an unauthorized placement is confirmed.
+   * when an unauthorized placement is confirmed.
    */
   async sendUnauthorizedEvidenceEmail(eventData, evidenceFilename, recipientOverride = null) {
     let recipientEmail = recipientOverride;
@@ -354,7 +354,7 @@ class ReportingService {
       } catch (_) {}
     }
     if (!recipientEmail) {
-      recipientEmail = process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com';
+      recipientEmail = process.env.ALERT_EMAIL_RECIPIENT || 'safety-admin@company.com';
     }
 
     const eventId = eventData.id || eventData.eventId || `EVT-${Date.now()}`;

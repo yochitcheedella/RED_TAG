@@ -140,7 +140,7 @@ export class MailQueueService {
     } catch (_) {}
 
     if (!configured) {
-      configured = process.env.ALERT_EMAIL_TO || process.env.ALERT_EMAIL_RECIPIENT || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com';
+      configured = process.env.ALERT_EMAIL_TO || process.env.ALERT_EMAIL_RECIPIENT || 'safety-admin@company.com';
     }
 
     return configured;

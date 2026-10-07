@@ -4,30 +4,53 @@ import { getSetting } from '../db.js';
 // Persistent secret key for signing/validating sessions
 const SESSION_SECRET = process.env.JWT_SECRET || process.env.ADMIN_SECRET || 'redtag-super-secure-admin-secret-2026';
 
-// In-memory active admin sessions map: token -> { username, role, expiresAt }
+// In-memory active sessions map: token -> { id, username, role, name, employee_id, rfid_uid, department, expiresAt }
 const activeSessions = new Map();
 
-// Helper to generate a secure signed admin token
-export function generateAdminToken(username = 'admin', role = 'admin') {
+// Generate a secure signed RBAC token
+export function generateToken(user) {
   const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
-  const normalizedRole = (role || 'admin').toLowerCase();
+  const normalizedRole = (user.role || 'user').toLowerCase();
+  const username = user.username || 'user';
   const payload = `${username}.${normalizedRole}.${expiresAt}`;
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
   const token = `rtg_${payload}.${sig}`;
 
-  activeSessions.set(token, {
+  const session = {
+    id: user.id || `USR-${username}`,
     username,
     role: normalizedRole,
+    name: user.name || username,
+    employee_id: user.employee_id || null,
+    rfid_uid: user.rfid_uid || null,
+    department: user.department || 'General',
     expiresAt
-  });
-  return { token, role: normalizedRole, expiresAt };
+  };
+
+  activeSessions.set(token, session);
+  return { token, role: normalizedRole, user: session, expiresAt };
 }
 
-// Helper to validate token
+// Backwards compatibility alias
+export function generateAdminToken(username = 'admin', role = 'admin') {
+  return generateToken({ username, role, name: username });
+}
+
+// Validate token
 export function validateAdminToken(token) {
   if (!token) return null;
 
-  // 1. Validate signed HMAC token
+  // 1. Check in-memory activeSessions map first for full metadata
+  const memorySession = activeSessions.get(token);
+  if (memorySession) {
+    if (Date.now() > memorySession.expiresAt) {
+      activeSessions.delete(token);
+      return null;
+    }
+    return memorySession;
+  }
+
+  // 2. Validate signed HMAC token structure
   if (token.startsWith('rtg_')) {
     const raw = token.substring(4);
     const parts = raw.split('.');
@@ -39,7 +62,16 @@ export function validateAdminToken(token) {
       const payload = `${username}.${role}.${expiresAtStr}`;
       const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
       if (sig === expectedSig) {
-        return { username, role: role.toLowerCase(), expiresAt };
+        return {
+          id: `USR-${username}`,
+          username,
+          role: role.toLowerCase(),
+          name: username,
+          employee_id: null,
+          rfid_uid: null,
+          department: 'General',
+          expiresAt
+        };
       }
     } else if (parts.length === 3) {
       const [username, expiresAtStr, sig] = parts;
@@ -49,19 +81,21 @@ export function validateAdminToken(token) {
       const payload = `${username}.${expiresAtStr}`;
       const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
       if (sig === expectedSig) {
-        return { username, role: 'admin', expiresAt };
+        return {
+          id: `USR-${username}`,
+          username,
+          role: 'admin',
+          name: username,
+          employee_id: null,
+          rfid_uid: null,
+          department: 'General',
+          expiresAt
+        };
       }
     }
   }
 
-  // 2. Fallback to in-memory activeSessions map
-  const session = activeSessions.get(token);
-  if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    activeSessions.delete(token);
-    return null;
-  }
-  return session;
+  return null;
 }
 
 // Invalidate token on logout
@@ -86,38 +120,39 @@ export function verifyOperatorCredentials(username, password) {
   return username.trim().toLowerCase() === expectedUser.trim().toLowerCase() && password === expectedPass;
 }
 
-// Express Middleware: Require Admin
-export function requireAdmin(req, res, next) {
+// Core Express Middleware: Authenticate Session
+export function authenticate(req, res, next) {
   let token = null;
 
-  // 1. Check Authorization header
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.substring(7).trim();
   }
-
-  // 2. Check query parameter (needed for image requests like <img src="/evidence/x.jpg?token=...">)
   if (!token && req.query.token) {
     token = req.query.token;
   }
-
-  // 3. Check X-Admin-Token custom header
   if (!token && req.headers['x-admin-token']) {
     token = req.headers['x-admin-token'];
   }
 
   const session = validateAdminToken(token);
   if (!session) {
-    // For local dashboard requests on localhost / 127.0.0.1
+    // For local dashboard requests on localhost / 127.0.0.1 (allows automated acceptance test suite)
     const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.hostname === 'localhost';
     if (isLocal) {
-      req.user = { username: 'local_admin', role: 'admin' };
+      req.user = {
+        id: 'USR-LOCAL',
+        username: 'local_admin',
+        role: 'admin',
+        name: 'Local Admin',
+        department: 'Engineering'
+      };
       return next();
     }
 
     return res.status(401).json({
-      error: 'Unauthorized: Administrator access required.',
-      code: 'ADMIN_AUTH_REQUIRED'
+      error: 'Unauthorized: Authentication required.',
+      code: 'AUTH_REQUIRED'
     });
   }
 
@@ -125,17 +160,41 @@ export function requireAdmin(req, res, next) {
   next();
 }
 
-// Express Middleware: Require Strict Admin (Operators are forbidden from destructive operations)
-export function requireStrictAdmin(req, res, next) {
-  requireAdmin(req, res, () => {
-    const role = (req.user?.role || '').toLowerCase();
-    if (role === 'operator') {
+// RBAC Middleware Generator
+export function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    authenticate(req, res, () => {
+      const userRole = (req.user?.role || '').toLowerCase();
+      // 'operator' is an alias for 'supervisor'
+      const normalizedRole = userRole === 'operator' ? 'supervisor' : userRole;
+      const normalizedAllowed = allowedRoles.map(r => r.toLowerCase());
+
+      if (normalizedAllowed.includes(normalizedRole) || normalizedRole === 'admin') {
+        return next();
+      }
+
       return res.status(403).json({
-        error: 'Forbidden: Operators do not have permission to delete records or modify system configurations.',
+        error: `Forbidden: Role '${req.user?.role}' does not have permission to access this resource. Required roles: ${allowedRoles.join(', ')}`,
+        code: 'FORBIDDEN_ROLE'
+      });
+    });
+  };
+}
+
+// Specific RBAC Middleware Guards
+export const requireUser = requireRole('user', 'supervisor', 'admin');
+export const requireSupervisor = requireRole('supervisor', 'admin');
+export const requireAdmin = (req, res, next) => {
+  authenticate(req, res, () => {
+    const role = (req.user?.role || '').toLowerCase();
+    if (role !== 'admin') {
+      return res.status(403).json({
+        error: 'Forbidden: Administrator privileges required.',
         code: 'ADMIN_ROLE_REQUIRED'
       });
     }
     next();
   });
-}
+};
+export const requireStrictAdmin = requireAdmin;
 

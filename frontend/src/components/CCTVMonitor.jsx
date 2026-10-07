@@ -15,8 +15,15 @@ export default function CCTVMonitor({
   onActivityChange,
   cctvRef,
   isActive,
-  socket
+  socket,
+  settings,
+  userRole = 'admin'
 }) {
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
   const containerRef = useRef(null);
@@ -246,24 +253,61 @@ export default function CCTVMonitor({
     const insideTrackers = (trackersRef.current || []).filter(t => t.inside);
     if (insideTrackers.length === 0) return null;
 
-    // 1. Unconfirmed candidate currently undergoing placement confirmation
+    // 0. If explicit objectId requested
+    if (options.objectId) {
+      const match = insideTrackers.find(t => t.objectId === options.objectId || t.id === options.objectId);
+      if (match) return match;
+    }
+
+    // 1. Candidate tracker inside ROI that already has genuine optical candidate frames captured
+    const withFrames = insideTrackers.filter(t => t.candidateFrames && t.candidateFrames.length > 0);
+    if (withFrames.length > 0) {
+      withFrames.sort((a, b) => (b.lastSeen || b.firstSeen || 0) - (a.lastSeen || a.firstSeen || 0));
+      return withFrames[0];
+    }
+
+    // 2. Unconfirmed candidate currently undergoing placement confirmation
     const unconfirmed = insideTrackers.filter(t => !t.authorized || t.state === 'PLACEMENT_CONFIRMING');
     if (unconfirmed.length > 0) {
       unconfirmed.sort((a, b) => (b.firstSeen || 0) - (a.firstSeen || 0));
       return unconfirmed[0];
     }
 
-    // 2. Tracker that first appeared during or after this kiosk session started
+    // 3. Tracker that first appeared during or after this kiosk session started
     if (sessionStart > 0) {
-      const sessionTrackers = insideTrackers.filter(t => (t.firstSeen || 0) >= sessionStart - 3000);
+      const sessionTrackers = insideTrackers.filter(t => (t.firstSeen || 0) >= sessionStart - 5000);
       if (sessionTrackers.length > 0) {
         sessionTrackers.sort((a, b) => (b.firstSeen || 0) - (a.firstSeen || 0));
         return sessionTrackers[0];
       }
     }
 
-    // If all trackers were already authorized prior to this session, return null to avoid stealing old objects
-    return null;
+    // 4. If there is only one object in the entire Red Tag Area, that IS the placed object
+    if (insideTrackers.length === 1) {
+      return insideTrackers[0];
+    }
+
+    // 5. Return the most recently seen inside tracker
+    insideTrackers.sort((a, b) => (b.lastSeen || b.firstSeen || 0) - (a.lastSeen || a.firstSeen || 0));
+    return insideTrackers[0];
+  };
+
+  // Helper: Verify that a canvas is not a pure black unrendered buffer
+  const isCanvasNonBlack = (canvas, ctx) => {
+    try {
+      const sw = Math.min(canvas.width, 60);
+      const sh = Math.min(canvas.height, 60);
+      const imgData = ctx.getImageData(0, 0, sw, sh).data;
+      let nonZeroCount = 0;
+      for (let i = 0; i < imgData.length; i += 4) {
+        if (imgData[i] > 15 || imgData[i + 1] > 15 || imgData[i + 2] > 15) {
+          nonZeroCount++;
+        }
+      }
+      return nonZeroCount > 10;
+    } catch (_) {
+      return true;
+    }
   };
 
   // Expose live high-resolution frame/object capture to parent (Kiosk & Admin)
@@ -274,12 +318,24 @@ export default function CCTVMonitor({
           try {
             const video = videoRef.current;
             if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
-            // 1. If a new candidate tracker is inside ROI, crop it with generous padding
+
+            // 1. If an active tracker exists, prefer its best genuine optical frame from the detection loop
             const activeTracker = findNewCandidateTracker(options);
             if (activeTracker) {
-              const crop = cropTargetObjectOnly(video, activeTracker, 50);
-              if (crop?.dataUrl) return crop.dataUrl;
+              if (activeTracker.candidateFrames && activeTracker.candidateFrames.length > 0) {
+                const best = selectBestFrameCrop(activeTracker);
+                if (best) {
+                  console.log(`📸 [CCTV] Used stored high-res optical candidate frame for ${activeTracker.objectId}`);
+                  return best;
+                }
+              }
+
+              const crop = cropTargetObjectOnly(video, activeTracker, 50, options);
+              if (crop?.dataUrl) {
+                return crop.dataUrl;
+              }
             }
+
             // 2. Fallback: crop the physical Red Tag polygon region from the live video
             const poly = polygonVerticesRef.current || [
               { x: 130, y: 180 }, { x: 510, y: 180 }, { x: 560, y: 440 }, { x: 80, y: 440 }
@@ -303,7 +359,26 @@ export default function CCTVMonitor({
             canvas.width = Math.max(800, Math.round(srcW));
             canvas.height = Math.round(canvas.width * (srcH / srcW));
             const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, canvas.width, canvas.height);
+
+            // Verify the canvas drew real camera data and not an unrendered black buffer
+            if (!isCanvasNonBlack(canvas, ctx)) {
+              console.warn('⚠️ [CCTV] Fallback canvas captured unrendered black frame. Returning null to allow server CCTV evidence fallback.');
+              return null;
+            }
+
+            // Watermark for full-zone optical evidence
+            const bannerH = Math.max(30, Math.round(canvas.height * 0.055));
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+            ctx.fillRect(0, canvas.height - bannerH, canvas.width, bannerH);
+            const isAuth = options.isAuthorized !== false;
+            ctx.fillStyle = isAuth ? '#34d399' : '#f87171';
+            ctx.font = `bold ${Math.round(bannerH * 0.44)}px JetBrains Mono, monospace`;
+            const labelText = (options.itemName || 'OBJECT').toUpperCase();
+            ctx.fillText(`● [${isAuth ? 'AUTHORIZED' : 'UNAUTHORIZED PLACEMENT'}] ${labelText} (HD OPTICAL EVIDENCE: ${canvas.width}x${canvas.height}px)`, 14, canvas.height - Math.round(bannerH * 0.28));
+
             return canvas.toDataURL('image/jpeg', 0.95);
           } catch (err) {
             console.warn('captureCurrentFrame error:', err);
@@ -376,23 +451,39 @@ export default function CCTVMonitor({
 
   // Enumerate cameras & prioritize external / HD Pro webcam
   useEffect(() => {
-    navigator.mediaDevices?.enumerateDevices()
-      .then(devices => {
-        const inputs = devices.filter(d => d.kind === 'videoinput');
-        setVideoDevices(inputs);
-        if (inputs.length > 0) {
-          const hdPro = inputs.find(d => {
-            const label = (d.label || '').toLowerCase();
-            return label.includes('hd pro') || label.includes('c920') || label.includes('external') || label.includes('logitech') || label.includes('usb');
-          });
-          if (hdPro) {
-            setSelectedDeviceId(hdPro.deviceId);
-          } else if (!selectedDeviceId) {
-            setSelectedDeviceId(inputs[0].deviceId);
+    const scanCameras = () => {
+      navigator.mediaDevices?.enumerateDevices()
+        .then(devices => {
+          const inputs = devices.filter(d => d.kind === 'videoinput');
+          setVideoDevices(inputs);
+          if (inputs.length > 0) {
+            const hdPro = inputs.find(d => {
+              const label = (d.label || '').toLowerCase();
+              return label.includes('hd pro') || label.includes('c920') || label.includes('external') || label.includes('logitech') || label.includes('usb');
+            });
+            if (hdPro) {
+              setSelectedDeviceId(hdPro.deviceId);
+            } else if (!selectedDeviceId) {
+              setSelectedDeviceId(inputs[0].deviceId);
+            }
           }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    };
+
+    scanCameras();
+
+    // Listen for USB plug/unplug events dynamically
+    const handleDeviceChange = () => {
+      console.log('🔌 [CAMERA] USB Device change detected, scanning cameras...');
+      scanCameras();
+      refreshDevices();
+    };
+
+    navigator.mediaDevices?.addEventListener?.('devicechange', handleDeviceChange);
+    return () => {
+      navigator.mediaDevices?.removeEventListener?.('devicechange', handleDeviceChange);
+    };
   }, [selectedDeviceId]);
 
   // Load real-time COCO-SSD (mobilenet_v2 for small item detection accuracy with fallback)
@@ -960,7 +1051,7 @@ export default function CCTVMonitor({
 
   // Section 8 & 30: High-Resolution, Complete Object Evidence Capture with Generous Context Padding
   // ZERO-HUMAN PRIVACY STANDARD: Captures the COMPLETE object while masking any accidental worker face overlap.
-  const cropTargetObjectOnly = (video, tracker, padding = 45) => {
+  const cropTargetObjectOnly = (video, tracker, padding = 45, options = {}) => {
     try {
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) return null;
 
@@ -1037,10 +1128,12 @@ export default function CCTVMonitor({
       const bannerH = Math.max(30, Math.round(targetH * 0.055));
       ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
       ctx.fillRect(0, canvas.height - bannerH, canvas.width, bannerH);
-      ctx.fillStyle = tracker.authorized ? '#34d399' : '#f87171';
+      const isAuth = options.isAuthorized || tracker.authorized || false;
+      ctx.fillStyle = isAuth ? '#34d399' : '#f87171';
       ctx.font = `bold ${Math.round(bannerH * 0.44)}px JetBrains Mono, monospace`;
-      const statusLabel = tracker.authorized ? 'AUTHORIZED' : 'UNAUTHORIZED PLACEMENT';
-      ctx.fillText(`● [${statusLabel}] ${tracker.objectId || 'TRACK'} | ${tracker.bestClass.toUpperCase()} (HD OPTICAL EVIDENCE: ${targetW}x${targetH}px)`, 14, canvas.height - Math.round(bannerH * 0.28));
+      const statusLabel = isAuth ? 'AUTHORIZED' : 'UNAUTHORIZED PLACEMENT';
+      const labelText = (options.itemName || tracker.bestClass || 'OBJECT').toUpperCase();
+      ctx.fillText(`● [${statusLabel}] ${tracker.objectId || 'TRACK'} | ${labelText} (HD OPTICAL EVIDENCE: ${targetW}x${targetH}px)`, 14, canvas.height - Math.round(bannerH * 0.28));
 
       const sharpness = computeSharpness(ctx, canvas.width, canvas.height);
       return {
@@ -1081,7 +1174,8 @@ export default function CCTVMonitor({
       console.log(`📸 [EVIDENCE] Best frame selected for ${tracker.objectId} from ${tracker.candidateFrames.length} candidates (Score: ${Math.round(tracker.candidateFrames[0].score)})`);
       return tracker.candidateFrames[0].cropDataUrl;
     }
-    const directCrop = cropTargetObjectOnly(videoRef.current, tracker, 50);
+    const cropPad = Math.max(5, parseInt(settingsRef.current?.evidence_padding_px || '20', 10));
+    const directCrop = cropTargetObjectOnly(videoRef.current, tracker, cropPad);
     return directCrop ? directCrop.dataUrl : captureFallbackBadge(tracker);
   };
 
@@ -1165,8 +1259,9 @@ export default function CCTVMonitor({
       // ZERO-HUMAN REQUIREMENT: Humans, workers, pedestrians, and their faces are NEVER tracking targets!
       const detectedPersons = [];
       let fullPredictions = [];
+      const userConfThreshold = Math.max(0.10, Math.min(0.90, parseFloat(settingsRef.current?.confidence_threshold || '0.25')));
       try {
-        fullPredictions = (await aiModel.detect(video, 20, 0.20)) || [];
+        fullPredictions = (await aiModel.detect(video, 20, Math.min(0.20, userConfThreshold))) || [];
         for (const fp of fullPredictions) {
           if (fp.class === 'person' && fp.score >= 0.20) {
             const [vx, vy, vwBox, vhBox] = fp.bbox;
@@ -1613,8 +1708,8 @@ export default function CCTVMonitor({
           performAiDetection();
         }
 
-        // Section 1: MIN_OBJECT_PERSISTENCE_MS = 5000ms strictly for all placements
-        const targetPersistenceMs = 5000;
+        // Section 1: Dynamic Stationary Verification Threshold from System Settings (default 5000ms)
+        const targetPersistenceMs = Math.max(1000, parseInt(settingsRef.current?.persistence_ms || '5000', 10));
         const activePoly = calibrationModeRef.current === 'draw' ? drawPointsRef.current : polygonVerticesRef.current;
 
         for (const tracker of trackersRef.current) {
@@ -1945,7 +2040,8 @@ export default function CCTVMonitor({
         currentActivity = 'Authorized placement';
       } else if (confirmingTracker) {
         const sec = ((confirmingTracker.stationaryDuration || 0) / 1000).toFixed(1);
-        statusLabel = `PLACEMENT BEING VERIFIED (${sec}s / 5.0s)`;
+        const targetSec = ((Math.max(1000, parseInt(settingsRef.current?.persistence_ms || '5000', 10))) / 1000).toFixed(1);
+        statusLabel = `PLACEMENT BEING VERIFIED (${sec}s / ${targetSec}s)`;
         statusText = '#D97706';
         statusBorder = '#D97706';
         currentActivity = 'Placement being verified';
@@ -2162,62 +2258,64 @@ export default function CCTVMonitor({
             </button>
           )}
 
-          {/* Calibration Modes */}
-          {calibrationMode === 'none' ? (
-            <>
-              <button
-                onClick={() => setCalibrationMode('drag')}
-                className="btn btn-outline btn-xs"
-                style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
-                title="Calibrate Floor Polygon">
-                <Crosshair size={12} />
-                Calibrate Area
-              </button>
+          {/* Calibration Modes - strictly Admin only */}
+          {userRole === 'admin' && (
+            calibrationMode === 'none' ? (
+              <>
+                <button
+                  onClick={() => setCalibrationMode('drag')}
+                  className="btn btn-outline btn-xs"
+                  style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.3)' }}
+                  title="Calibrate Floor Polygon">
+                  <Crosshair size={12} />
+                  Calibrate Area
+                </button>
 
-              <button
-                onClick={() => setShowOperatorTools(prev => !prev)}
-                className={`btn btn-xs ${showOperatorTools ? 'btn-primary' : 'btn-outline'}`}
-                title="Toggle Quick Diagnostics Tools">
-                <Wrench size={12} />
-                <span>Tools</span>
-              </button>
-            </>
-          ) : calibrationMode === 'drag' ? (
-            <div style={{ display: 'flex', gap: '5px' }}>
-              <button
-                onClick={() => savePolygon()}
-                className="btn btn-success btn-xs"
-                style={{ padding: '5px 10px' }}>
-                <Check size={12} />
-                Save Area
-              </button>
-              <button
-                onClick={() => setCalibrationMode('none')}
-                className="btn btn-outline btn-xs">
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: '5px' }}>
-              <button
-                disabled={drawPoints.length < 3}
-                onClick={() => savePolygon(drawPoints)}
-                className="btn btn-success btn-xs"
-                style={{ padding: '5px 10px' }}>
-                <Check size={12} />
-                Finish ({drawPoints.length} pts)
-              </button>
-              <button
-                onClick={() => setDrawPoints([])}
-                className="btn btn-outline btn-xs">
-                Clear
-              </button>
-              <button
-                onClick={() => setCalibrationMode('none')}
-                className="btn btn-outline btn-xs">
-                Cancel
-              </button>
-            </div>
+                <button
+                  onClick={() => setShowOperatorTools(prev => !prev)}
+                  className={`btn btn-xs ${showOperatorTools ? 'btn-primary' : 'btn-outline'}`}
+                  title="Toggle Quick Diagnostics Tools">
+                  <Wrench size={12} />
+                  <span>Tools</span>
+                </button>
+              </>
+            ) : calibrationMode === 'drag' ? (
+              <div style={{ display: 'flex', gap: '5px' }}>
+                <button
+                  onClick={() => savePolygon()}
+                  className="btn btn-success btn-xs"
+                  style={{ padding: '5px 10px' }}>
+                  <Check size={12} />
+                  Save Area
+                </button>
+                <button
+                  onClick={() => setCalibrationMode('none')}
+                  className="btn btn-outline btn-xs">
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '5px' }}>
+                <button
+                  disabled={drawPoints.length < 3}
+                  onClick={() => savePolygon(drawPoints)}
+                  className="btn btn-success btn-xs"
+                  style={{ padding: '5px 10px' }}>
+                  <Check size={12} />
+                  Finish ({drawPoints.length} pts)
+                </button>
+                <button
+                  onClick={() => setDrawPoints([])}
+                  className="btn btn-outline btn-xs">
+                  Clear
+                </button>
+                <button
+                  onClick={() => setCalibrationMode('none')}
+                  className="btn btn-outline btn-xs">
+                  Cancel
+                </button>
+              </div>
+            )
           )}
         </div>
       </div>
@@ -2533,7 +2631,7 @@ export default function CCTVMonitor({
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <Clock size={14} color="#f59e0b" />
           <span>Stationary Filter: </span>
-          <span style={{ color: '#10b981', fontWeight: 600 }}>5.0s Debouncing Engine Active</span>
+          <span style={{ color: '#10b981', fontWeight: 600 }}>{((Math.max(1000, parseInt(settings?.persistence_ms || '5000', 10))) / 1000).toFixed(1)}s Debouncing Engine Active</span>
         </div>
       </div>
     </div>

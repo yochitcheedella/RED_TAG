@@ -104,6 +104,7 @@ class CorrelationEngine {
     let closestDist = Infinity;
 
     for (const [id, obj] of this.registeredObjects.entries()) {
+      if (obj.state !== 'PRESENT') continue;
       let objBox = obj.box;
       if (!objBox && obj.bounding_box) {
         try {
@@ -128,9 +129,8 @@ class CorrelationEngine {
         const dist = Math.hypot(candCenterX - objCenterX, candCenterY - objCenterY);
 
         const isPresent = obj.state === 'PRESENT';
-        const isRecentlyTracked = (Date.now() - (obj.lastSeen || 0)) < 600000; // 10 minutes
 
-        if (isPresent || isRecentlyTracked) {
+        if (isPresent) {
           // Strictly match the SAME physical item: require overlap (IoU >= 0.20) or tight center proximity (< 40px)
           if (iou >= 0.20 && iou > highestIou) {
             highestIou = iou;
@@ -156,7 +156,7 @@ class CorrelationEngine {
     // 3. Fallback: Check in-memory registeredObjects AND SQLite database for authorized items
     // (e.g. from Kiosk placement confirmation where camera coordinates were not yet bound or temporarily dropped)
     let activeAuthorized = Array.from(this.registeredObjects.values()).filter(o => 
-      (o.isAuthorized || o.authorization_status === 'AUTHORIZED' || o.authStatus === 'AUTHORIZED')
+      o.state === 'PRESENT' && (o.isAuthorized || o.authorization_status === 'AUTHORIZED' || o.authStatus === 'AUTHORIZED')
     );
 
     // Check SQLite database as well to include any placed authorized objects
@@ -233,7 +233,7 @@ class CorrelationEngine {
   /**
    * Section 87 & 88: Handle removal of an object from the Red Tag Area
    */
-  handleObjectRemoved(identifier) {
+  handleObjectRemoved(identifier, force = false) {
     let target = null;
     if (identifier) {
       for (const [id, obj] of this.registeredObjects.entries()) {
@@ -247,9 +247,13 @@ class CorrelationEngine {
     if (!target && identifier) {
       try {
         const dbObj = db.prepare('SELECT * FROM objects WHERE id = ?').get(identifier);
-        if (dbObj && dbObj.authorization_status === 'AUTHORIZED') {
-          console.log(`🛡️ [CorrelationEngine] Preserving authorized object ${identifier} from DB — protected from accidental camera absence removal.`);
-          return { success: true, objectId: identifier, state: 'PRESENT', protected: true };
+        if (dbObj) {
+          if (!force && dbObj.authorization_status === 'AUTHORIZED') {
+            console.log(`🛡️ [CorrelationEngine] Preserving authorized object ${identifier} from DB — protected from accidental camera absence removal.`);
+            return { success: true, objectId: identifier, state: 'PRESENT', protected: true };
+          }
+          updateObjectState(identifier, 'REMOVED');
+          return { success: true, objectId: identifier, state: 'REMOVED' };
         }
       } catch (err) {}
     }
@@ -258,7 +262,7 @@ class CorrelationEngine {
       // PREVENT ACCIDENTAL AUTOMATED DELETION OF AUTHORIZED OBJECTS:
       // Authorized objects in the Red Tag Area represent physical items placed for 5S retention.
       // They must NOT be purged from the system due to transient camera absence or detector flickering!
-      if (target.isAuthorized || target.authorization_status === 'AUTHORIZED' || target.authStatus === 'AUTHORIZED') {
+      if (!force && (target.isAuthorized || target.authorization_status === 'AUTHORIZED' || target.authStatus === 'AUTHORIZED')) {
         console.log(`🛡️ [CorrelationEngine] Preserving authorized object ${target.objectId} (${target.item_name || target.objectType}) — protected from accidental camera absence removal.`);
         return { success: true, objectId: target.objectId, state: 'PRESENT', protected: true };
       }
@@ -348,6 +352,30 @@ class CorrelationEngine {
         };
       } else {
         // Group J: Duplicate Alert Prevention for already-alerted stationary object
+        // If an active kiosk registration is waiting for placement confirmation, link this candidate object!
+        const activeKioskReg = getAnyPendingKioskRegistration();
+        if (activeKioskReg && new Date(activeKioskReg.expires_at).getTime() > now) {
+          this.pendingKioskCandidate = {
+            kioskRegId: activeKioskReg.id,
+            objectType: placementData.objectType || existing.objectType || activeKioskReg.item_name,
+            box: placementData.box || existing.box,
+            confidence: placementData.confidence || existing.confidence || 0.94,
+            evidenceImage: placementData.evidenceImage || existing.evidenceImage,
+            objectId: existing.objectId,
+            detectedAt: now
+          };
+          console.log(`📋 [CorrelationEngine] Linked existing object ${existing.objectId} to Kiosk session "${activeKioskReg.item_name}".`);
+          if (this.io) {
+            this.io.emit('kiosk_item_detected', {
+              kioskRegId: activeKioskReg.id,
+              objectType: placementData.objectType || existing.objectType,
+              itemName: activeKioskReg.item_name,
+              evidenceImage: placementData.evidenceImage || existing.evidenceImage,
+              message: `Object detected in Red Tag Area: ${activeKioskReg.item_name}`
+            });
+          }
+        }
+
         console.log(`ℹ️ [Group J] Object ${existing.objectId} is already present and alerted. Suppressing duplicate event and alert.`);
         console.log('========================================\n');
         return {
@@ -369,6 +397,12 @@ class CorrelationEngine {
     }
 
     // NEW OBJECT BEING PLACED IN THE RED TAG AREA
+    let objectId = placementData.objectId;
+    if (!objectId) {
+      objectId = `TRACK-${Date.now().toString().slice(-4)}`;
+    }
+    const eventId = `EVT-${Date.now()}-${uuidv4().slice(0, 4).toUpperCase()}`;
+
     let isAuthorized = false;
     let authStatus = 'NO_RFID';
     let rfidUID = null;
@@ -451,15 +485,15 @@ class CorrelationEngine {
     } else {
       // No active token — check if this is an immediate back-to-back duplicate placement (Rule 10) or expired scan (Case E)
       const lastToken = rfidService.getLastScannedToken();
-      if (lastToken && lastToken.consumed && (now - lastToken.scanned_at < 3000)) {
-        // CASE F: 1 Scan = 1 Placement — already consumed immediately prior (within 3 seconds)
+      if (lastToken && lastToken.consumed && (now - lastToken.scanned_at < 15000)) {
+        // CASE F: 1 Scan = 1 Placement — already consumed immediately prior (within 15 seconds)
         rfidUID = lastToken.uid;
         employeeId = lastToken.employee_id || null;
         employeeName = lastToken.employee_name;
         timeDifference = ((now - lastToken.scanned_at) / 1000).toFixed(1);
         authStatus = 'TOKEN_ALREADY_CONSUMED';
         notes = `Unauthorized placement: RFID badge for ${employeeName} (${rfidUID}) was already consumed by a prior placement (Rule 10 — 1 Scan = 1 Placement).`;
-      } else if (lastToken && !lastToken.consumed && now > lastToken.expires_at && (now - lastToken.expires_at < 3000)) {
+      } else if (lastToken && !lastToken.consumed && now > lastToken.expires_at && (now - lastToken.expires_at < 15000)) {
         // CASE E: EXPIRED RFID SCAN (within 3 seconds of expiration)
         rfidUID = lastToken.uid;
         employeeId = lastToken.employee_id || null;
@@ -479,12 +513,6 @@ class CorrelationEngine {
       }
     }
 
-    // Section 82 & Section 4: Generate unique internal Object Tracking ID
-    let objectId = placementData.objectId;
-    if (!objectId) {
-      objectId = `TRACK-${Date.now().toString().slice(-4)}`;
-    }
-    const eventId = `EVT-${Date.now()}-${uuidv4().slice(0, 4).toUpperCase()}`;
 
     // Section 81, 93, 94 & Section 30: Universal Image Capture for BOTH Authorized and Unauthorized placements
     let finalEvidenceFilename = placementData.evidenceImage || null;
@@ -706,26 +734,78 @@ class CorrelationEngine {
 
     // 1. Evidence image resolution
     let finalEvidenceFilename = null;
-    if (imageBase64) {
+
+    // A. Prioritize genuine CCTV optical candidate captured during this placement session
+    if (this.pendingKioskCandidate && this.pendingKioskCandidate.evidenceImage) {
+      if (this.pendingKioskCandidate.kioskRegId === reg.id || !this.pendingKioskCandidate.kioskRegId) {
+        const candFile = path.join(evidenceDir, this.pendingKioskCandidate.evidenceImage);
+        try {
+          if (fs.existsSync(candFile) && fs.statSync(candFile).size > 5000) {
+            finalEvidenceFilename = this.pendingKioskCandidate.evidenceImage;
+            console.log(`📸 [Kiosk] Linked verified CCTV candidate evidence image: ${finalEvidenceFilename}`);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // B. If not yet resolved and client provided imageBase64, validate it is not a blank/black frame
+    if (!finalEvidenceFilename && imageBase64) {
       try {
-        const filename = `evidence_${now}_${uuidv4().slice(0, 8)}.jpg`;
-        const filePath = path.join(evidenceDir, filename);
         const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-        fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
-        finalEvidenceFilename = filename;
-        console.log(`📸 [Kiosk] Saved direct evidence frame from camera crop: ${filename}`);
+        const buf = Buffer.from(base64Data, 'base64');
+        // Real optical JPEG crops are typically 30KB - 200KB; unrendered black frames are ~3.5KB
+        if (buf.length > 7000) {
+          const filename = `evidence_${now}_${uuidv4().slice(0, 8)}.jpg`;
+          const filePath = path.join(evidenceDir, filename);
+          fs.writeFileSync(filePath, buf);
+          finalEvidenceFilename = filename;
+          console.log(`📸 [Kiosk] Saved direct evidence frame from camera crop: ${filename} (${buf.length} bytes)`);
+        } else {
+          console.warn(`⚠️ [Kiosk] Client uploaded image is too small (${buf.length} bytes, likely unrendered offscreen canvas). Falling back to CCTV optical frame.`);
+        }
       } catch (err) {
         console.warn('Could not save uploaded evidence image:', err.message);
       }
     }
 
-    // If client didn't supply an imageBase64, use the candidate captured by CCTV during placement
-    if (!finalEvidenceFilename && this.pendingKioskCandidate && this.pendingKioskCandidate.kioskRegId === reg.id) {
-      finalEvidenceFilename = this.pendingKioskCandidate.evidenceImage;
-      console.log(`📸 [Kiosk] Linked CCTV candidate evidence image: ${finalEvidenceFilename}`);
+    // C. If still no evidence image, check any active unassigned or unconfirmed object in registeredObjects
+    if (!finalEvidenceFilename) {
+      for (const [id, obj] of this.registeredObjects.entries()) {
+        if (obj.evidenceImage && (!obj.isAuthorized || obj.authorization_status !== 'AUTHORIZED')) {
+          const candFile = path.join(evidenceDir, obj.evidenceImage);
+          if (fs.existsSync(candFile) && fs.statSync(candFile).size > 5000) {
+            finalEvidenceFilename = obj.evidenceImage;
+            console.log(`📸 [Kiosk] Linked unassigned active object evidence image: ${finalEvidenceFilename}`);
+            break;
+          }
+        }
+      }
     }
 
-    // If still no evidence image, generate high-definition optical badge
+    // D. If still no evidence image, check recent real optical evidence files (>7KB) captured within the last 3 minutes
+    if (!finalEvidenceFilename) {
+      try {
+        const recentFiles = fs.readdirSync(evidenceDir)
+          .filter(f => {
+            if (!f.startsWith('evidence_') || !f.endsWith('.jpg') || f.includes('badge')) return false;
+            try {
+              return fs.statSync(path.join(evidenceDir, f)).size > 7000;
+            } catch {
+              return false;
+            }
+          })
+          .map(f => ({ name: f, time: fs.statSync(path.join(evidenceDir, f)).mtimeMs }))
+          .sort((a, b) => b.time - a.time);
+        if (recentFiles.length > 0 && (now - recentFiles[0].time) < 180000) {
+          finalEvidenceFilename = recentFiles[0].name;
+          console.log(`📸 [Kiosk] Linked most recent optical camera evidence captured within 3m: ${finalEvidenceFilename}`);
+        }
+      } catch (err) {
+        console.warn('Could not scan evidence directory:', err.message);
+      }
+    }
+
+    // If still no evidence image, generate high-definition optical badge as ultimate fallback
     if (!finalEvidenceFilename) {
       try {
         const { visionService } = await import('./visionService.js');

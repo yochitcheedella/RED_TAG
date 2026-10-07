@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Settings, Radio, Camera, Save, RefreshCw, Check, Shield, Eye, Sliders, Wrench, ShieldCheck, AlertTriangle, Terminal, Mail, Send } from 'lucide-react';
+import { X, Settings, Camera, Save, Check, Sliders, Terminal, RefreshCw, Video } from 'lucide-react';
 import SimulationSuite from './SimulationSuite';
 
 export default function SettingsModal({
@@ -12,110 +12,115 @@ export default function SettingsModal({
   activeToken,
   userRole = 'admin'
 }) {
-  const [activeTab, setActiveTab] = useState('detection'); // 'camera', 'rfid', 'roi', 'detection', 'alerts', 'developer'
+  const [activeTab, setActiveTab] = useState('detection'); // 'detection' | 'camera' | 'developer'
 
   const [formData, setFormData] = useState({
     auth_window_ms: '60000',
     persistence_ms: '5000', // Default 5.0 seconds
-    confidence_threshold: '0.35',
+    confidence_threshold: '0.25',
     evidence_padding_px: '20',
     rtsp_url: '',
+    preferred_camera_device_id: '',
     serial_port: '',
     baud_rate: '9600',
     capture_authorized_evidence: 'true',
     alert_auto_dismiss: 'false',
-    alert_email_recipient: 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'
+    alert_email_recipient: 'safety-admin@company.com'
   });
 
-  const [availablePorts, setAvailablePorts] = useState([]);
-  const [isScanningPorts, setIsScanningPorts] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
-  const [testEmailStatus, setTestEmailStatus] = useState('idle'); // idle | sending | success | error
-  const [testEmailDetails, setTestEmailDetails] = useState(null);
+  const [saveError, setSaveError] = useState(null);
+  const [cameraList, setCameraList] = useState([]);
+  const [isScanningCameras, setIsScanningCameras] = useState(false);
+
+  const scanLocalCameras = async () => {
+    setIsScanningCameras(true);
+    try {
+      let devices = await navigator.mediaDevices?.enumerateDevices();
+      let videoInputs = (devices || []).filter(d => d.kind === 'videoinput');
+      // If camera names are empty strings due to lack of active permission, prompt stream briefly
+      if (videoInputs.length > 0 && !videoInputs[0].label) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          stream.getTracks().forEach(t => t.stop());
+          devices = await navigator.mediaDevices?.enumerateDevices();
+          videoInputs = (devices || []).filter(d => d.kind === 'videoinput');
+        } catch (_) {}
+      }
+      setCameraList(videoInputs);
+    } catch (err) {
+      console.warn('Camera scan failed:', err);
+    } finally {
+      setIsScanningCameras(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'camera') {
+      scanLocalCameras();
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (settings) {
       setFormData({
         auth_window_ms: String(settings.auth_window_ms || '60000'),
         persistence_ms: String(settings.persistence_ms || '5000'),
-        confidence_threshold: String(settings.confidence_threshold || '0.35'),
+        confidence_threshold: String(settings.confidence_threshold || '0.25'),
         evidence_padding_px: String(settings.evidence_padding_px || '20'),
         rtsp_url: settings.rtsp_url || '',
+        preferred_camera_device_id: settings.preferred_camera_device_id || '',
         serial_port: settings.serial_port || '',
         baud_rate: String(settings.baud_rate || '9600'),
         capture_authorized_evidence: String(settings.capture_authorized_evidence ?? 'true'),
         alert_auto_dismiss: String(settings.alert_auto_dismiss ?? 'false'),
-        alert_email_recipient: settings.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'
+        alert_email_recipient: settings.alert_email_recipient || 'safety-admin@company.com'
       });
     }
-    fetchSerialPorts();
   }, [settings]);
-
-  const handleTestEmail = async () => {
-    setTestEmailStatus('sending');
-    try {
-      const res = await fetch('/api/alerts/test-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: formData.alert_email_recipient || 'yochitcheedella@gmail.com' })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setTestEmailDetails(data);
-        setTestEmailStatus('success');
-        setTimeout(() => setTestEmailStatus('idle'), 8000);
-      } else {
-        setTestEmailDetails(null);
-        setTestEmailStatus('error');
-        setTimeout(() => setTestEmailStatus('idle'), 6000);
-      }
-    } catch (err) {
-      setTestEmailStatus('error');
-      setTimeout(() => setTestEmailStatus('idle'), 4000);
-    }
-  };
-
-  const fetchSerialPorts = async () => {
-    setIsScanningPorts(true);
-    try {
-      const res = await fetch('/api/serial-ports');
-      const data = await res.json();
-      setAvailablePorts(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.warn('Could not list serial ports:', err);
-    } finally {
-      setIsScanningPorts(false);
-    }
-  };
 
   const set = (key, value) => setFormData(prev => ({ ...prev, [key]: value }));
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault();
-    onSaveSettings(formData);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2000);
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      if (typeof onSaveSettings === 'function') {
+        const result = await onSaveSettings(formData);
+        if (result && result.success === false) {
+          setSaveError(result.error || 'Failed to save configuration.');
+          return;
+        }
+      }
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 2500);
+    } catch (err) {
+      console.error('Settings save exception:', err);
+      setSaveError(err.message || 'Error communicating with backend.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const allTabs = [
     { id: 'detection', label: 'Detection & Timing', icon: Sliders },
     { id: 'camera', label: 'Camera', icon: Camera },
-    { id: 'rfid', label: 'RFID Reader', icon: Radio },
-    { id: 'roi', label: 'ROI Configuration', icon: ShieldCheck },
-    { id: 'alerts', label: 'Alerts & Evidence', icon: AlertTriangle },
     { id: 'developer', label: 'Developer Tools', icon: Terminal, isDev: true }
   ];
 
-  // Section 35: Developer Tools only accessible to Developer role
-  const settingsTabs = userRole === 'developer'
+  // Developer Tools accessible to Admin and Developer
+  const isElevated = (userRole || '').toLowerCase() === 'developer' || (userRole || '').toLowerCase() === 'admin';
+  const settingsTabs = isElevated
     ? allTabs
     : allTabs.filter(t => !t.isDev);
 
   useEffect(() => {
-    if (userRole !== 'developer' && activeTab === 'developer') {
+    if (!isElevated && activeTab === 'developer') {
       setActiveTab('detection');
     }
-  }, [userRole, activeTab]);
+  }, [isElevated, activeTab]);
 
   return (
     <div style={{
@@ -133,7 +138,7 @@ export default function SettingsModal({
         className="soc-card"
         style={{
           width: '100%',
-          maxWidth: activeTab === 'developer' ? '920px' : '680px',
+          maxWidth: activeTab === 'developer' ? '920px' : '620px',
           maxHeight: '90vh',
           boxShadow: 'var(--shadow-modal)',
           overflow: 'hidden',
@@ -171,7 +176,7 @@ export default function SettingsModal({
                 System Settings
               </h3>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>
-                Operational Thresholds, Hardware Connectors, and Developer Diagnostics
+                Operational Thresholds, Camera Stream, and Developer Diagnostics
               </p>
             </div>
           </div>
@@ -197,7 +202,7 @@ export default function SettingsModal({
                 key={t.id}
                 onClick={() => setActiveTab(t.id)}
                 style={{
-                  padding: '10px 14px',
+                  padding: '10px 16px',
                   fontSize: '0.78rem',
                   fontWeight: isActive ? 700 : 500,
                   color: isActive ? (t.isDev ? 'var(--warning)' : 'var(--info)') : 'var(--text-secondary)',
@@ -205,8 +210,11 @@ export default function SettingsModal({
                   background: isActive ? '#FFFFFF' : 'transparent',
                   borderTopLeftRadius: 'var(--radius-sm)',
                   borderTopRightRadius: 'var(--radius-sm)',
+                  display: 'flex',
+                  alignItems: 'center',
                   gap: '6px',
-                  whiteSpace: 'nowrap'
+                  whiteSpace: 'nowrap',
+                  cursor: 'pointer'
                 }}
               >
                 <Icon size={14} color={isActive ? (t.isDev ? 'var(--warning)' : 'var(--info)') : 'currentColor'} />
@@ -231,7 +239,7 @@ export default function SettingsModal({
         {/* Tab Content Body */}
         <div style={{ overflowY: 'auto', flex: 1, padding: '20px' }}>
           {activeTab === 'developer' ? (
-            /* SECTION 17: DEVELOPER / TESTING MODE */
+            /* DEVELOPER / TESTING MODE */
             <div>
               <SimulationSuite
                 onSimulateRFID={onSimulateRFID}
@@ -278,6 +286,40 @@ export default function SettingsModal({
                     </div>
                   </div>
 
+                  {/* RFID Authorization Window */}
+                  <div style={{
+                    background: 'var(--bg-muted)',
+                    padding: '14px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                        RFID Authorization Window:
+                      </label>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--info)', fontSize: '0.95rem' }}>
+                        {Math.round(parseInt(formData.auth_window_ms, 10) / 1000)} seconds
+                      </span>
+                    </div>
+
+                    <input
+                      type="range"
+                      min="5000"
+                      max="120000"
+                      step="5000"
+                      value={formData.auth_window_ms}
+                      onChange={(e) => set('auth_window_ms', e.target.value)}
+                      style={{ width: '100%', accentColor: 'var(--info)', margin: '8px 0' }}
+                    />
+
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                      Duration an RFID badge scan remains valid for subsequent object placement inside the Red Tag Area. Default: 60.0 seconds.
+                    </div>
+                  </div>
+
                   {/* Confidence Threshold */}
                   <div style={{
                     background: 'var(--bg-muted)',
@@ -307,7 +349,7 @@ export default function SettingsModal({
                       style={{ width: '100%', accentColor: 'var(--info)', margin: '8px 0' }}
                     />
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      Minimum COCO-SSD object confidence required inside the Red Tag Area.
+                      Minimum COCO-SSD object confidence required inside the Red Tag Area. Default: 25%.
                     </div>
                   </div>
 
@@ -340,7 +382,7 @@ export default function SettingsModal({
                       style={{ width: '100%', accentColor: 'var(--info)', margin: '8px 0' }}
                     />
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      Forensic boundary margin around placed item for object-focused evidence crop.
+                      Forensic boundary margin around placed item for object-focused evidence crop. Default: 20 px.
                     </div>
                   </div>
                 </div>
@@ -349,6 +391,110 @@ export default function SettingsModal({
               {/* 2. CAMERA */}
               {activeTab === 'camera' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {/* Local Hardware Cameras */}
+                  <div style={{
+                    background: 'var(--bg-muted)',
+                    padding: '14px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Video size={16} color="var(--info)" />
+                        <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                          Connected USB / Integrated Webcams
+                        </label>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={scanLocalCameras}
+                        disabled={isScanningCameras}
+                        className="btn btn-outline btn-xs"
+                        style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <RefreshCw size={11} className={isScanningCameras ? 'spin' : ''} />
+                        <span>Scan Cameras</span>
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {cameraList.length === 0 ? (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                          No cameras detected yet or permissions pending. Click "Scan Cameras" above or allow browser camera permissions.
+                        </div>
+                      ) : (
+                        cameraList.map((cam, idx) => {
+                          const label = cam.label || `Camera ${idx + 1} (USB Video Device)`;
+                          const isLogitech = label.toLowerCase().includes('logitech') || label.toLowerCase().includes('c920');
+                          const isPreferred = formData.preferred_camera_device_id === cam.deviceId;
+                          return (
+                            <div
+                              key={cam.deviceId || idx}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '8px 12px',
+                                background: isPreferred ? 'rgba(37, 99, 235, 0.05)' : '#FFFFFF',
+                                border: isPreferred ? '1px solid var(--info)' : '1px solid var(--border-medium)',
+                                borderRadius: 'var(--radius-xs)',
+                                fontSize: '0.78rem'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                                  {label}
+                                </span>
+                                {isPreferred && (
+                                  <span style={{ fontSize: '0.65rem', background: 'var(--info)', color: '#FFFFFF', padding: '1px 5px', borderRadius: '3px', fontWeight: 700 }}>
+                                    PRIMARY
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => set('preferred_camera_device_id', cam.deviceId)}
+                                  className="btn btn-ghost btn-xs"
+                                  style={{ fontSize: '0.68rem', padding: '2px 6px' }}
+                                >
+                                  {isPreferred ? 'Selected' : 'Use This Camera'}
+                                </button>
+                                <span style={{
+                                  fontSize: '0.68rem',
+                                  color: isLogitech ? 'var(--info)' : 'var(--success)',
+                                  background: isLogitech ? 'rgba(56, 189, 248, 0.1)' : 'var(--success-bg)',
+                                  border: `1px solid ${isLogitech ? 'rgba(56, 189, 248, 0.3)' : 'var(--success-border)'}`,
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontWeight: 700
+                                }}>
+                                  ● ONLINE
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Hardware Diagnostic Note */}
+                    <div style={{
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                      lineHeight: 1.45,
+                      background: 'rgba(255, 255, 255, 0.6)',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-xs)',
+                      border: '1px solid var(--border-subtle)'
+                    }}>
+                      💡 <strong>Logitech C920 Note:</strong> If your Logitech C920 is plugged in but not visible in the list, check that its USB cable is firmly inserted directly into a powered USB port (Windows reported Code 45: Disconnected). Once connected, it will be automatically selected for live surveillance.
+                    </div>
+                  </div>
+
                   <div>
                     <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '6px' }}>
                       RTSP / Network Video Stream URL (Optional)
@@ -362,233 +508,6 @@ export default function SettingsModal({
                     />
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
                       Leave blank to use local USB / Integrated HD webcam feed.
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 3. RFID */}
-              {activeTab === 'rfid' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {/* Sliding Window */}
-                  <div style={{
-                    background: 'var(--bg-muted)',
-                    padding: '14px 16px',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--border-subtle)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px'
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        RFID Authorization Window
-                      </label>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--info)' }}>
-                        {(parseInt(formData.auth_window_ms, 10) / 1000).toFixed(0)} seconds
-                      </span>
-                    </div>
-
-                    <input
-                      type="range"
-                      min="5000"
-                      max="180000"
-                      step="5000"
-                      value={formData.auth_window_ms}
-                      onChange={(e) => set('auth_window_ms', e.target.value)}
-                      style={{ width: '100%', accentColor: 'var(--info)', margin: '8px 0' }}
-                    />
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      Valid placement window after an authorized card scan before credentials expire.
-                    </div>
-                  </div>
-
-                  {/* Serial Port */}
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                      <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        Hardware COM Serial Port
-                      </label>
-                      <button
-                        type="button"
-                        onClick={fetchSerialPorts}
-                        disabled={isScanningPorts}
-                        className="btn btn-outline btn-xs"
-                      >
-                        <RefreshCw size={11} className={isScanningPorts ? 'spin' : ''} />
-                        <span>Scan Ports</span>
-                      </button>
-                    </div>
-
-                    <select
-                      value={formData.serial_port}
-                      onChange={(e) => set('serial_port', e.target.value)}
-                      style={{ width: '100%' }}
-                    >
-                      <option value="">Auto-Detect USB HID / COM Port</option>
-                      {availablePorts.map((p) => (
-                        <option key={p.path} value={p.path}>
-                          {p.path} {p.manufacturer ? `(${p.manufacturer})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              {/* 4. ROI CONFIGURATION */}
-              {activeTab === 'roi' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                    The physical Red Tag Area is defined by a 4-point floor polygon calibrated on the live camera viewport.
-                  </div>
-
-                  <div style={{
-                    padding: '12px 14px',
-                    background: 'var(--bg-muted)',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--border-subtle)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between'
-                  }}>
-                    <div>
-                      <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        Calibrate Area Polygon
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        Use 'Calibrate Area' on the live monitor feed to drag corners or draw boundary points.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 5. ALERTS & EVIDENCE */}
-              {activeTab === 'alerts' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {/* Universal Evidence Capture */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '12px 14px',
-                    background: 'var(--bg-muted)',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--border-subtle)'
-                  }}>
-                    <div>
-                      <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        Universal Evidence Capture
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        Store forensic object crops for both authorized and unauthorized placements.
-                      </div>
-                    </div>
-
-                    <input
-                      type="checkbox"
-                      checked={formData.capture_authorized_evidence === 'true'}
-                      onChange={(e) => set('capture_authorized_evidence', String(e.target.checked))}
-                      style={{ width: '18px', height: '18px', accentColor: 'var(--info)' }}
-                    />
-                  </div>
-
-                  {/* Alert Email Recipient */}
-                  <div style={{
-                    padding: '14px',
-                    background: '#FFFFFF',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--border-medium)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Mail size={16} color="var(--brand-red)" />
-                      <label style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-                        Automatic Incident Email Notification
-                      </label>
-                    </div>
-                    <p style={{ fontSize: '0.73rem', color: 'var(--text-muted)', margin: 0 }}>
-                      When an unauthorized placement is confirmed, the cropped object evidence and incident report will be automatically dispatched to this email address.
-                    </p>
-
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <input
-                        type="text"
-                        value={formData.alert_email_recipient}
-                        onChange={(e) => set('alert_email_recipient', e.target.value)}
-                        placeholder="yochitcheedella@gmail.com, nishapanneerv@gmail.com"
-                        style={{
-                          flex: 1,
-                          fontSize: '0.8125rem',
-                          fontFamily: 'var(--font-mono)',
-                          padding: '8px 12px'
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={handleTestEmail}
-                        disabled={testEmailStatus === 'sending'}
-                        className="btn btn-outline btn-sm"
-                        style={{ whiteSpace: 'nowrap' }}
-                      >
-                        <Send size={13} />
-                        <span>{testEmailStatus === 'sending' ? 'Sending...' : 'Test Alert Email'}</span>
-                      </button>
-                    </div>
-
-                    {testEmailStatus === 'success' && (
-                      <div style={{
-                        fontSize: '0.72rem',
-                        fontWeight: 600,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '5px',
-                        background: testEmailDetails?.smtpConfigured ? 'var(--success-bg)' : '#FFFBEB',
-                        color: testEmailDetails?.smtpConfigured ? 'var(--success)' : '#B45309',
-                        border: `1px solid ${testEmailDetails?.smtpConfigured ? 'var(--success)' : '#FDE68A'}`,
-                        padding: '8px 12px',
-                        borderRadius: 'var(--radius-xs)'
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <Check size={14} />
-                          <span>
-                            {testEmailDetails?.smtpConfigured
-                              ? `Live Gmail SMTP dispatched to ${formData.alert_email_recipient}!`
-                              : `Sandbox Preview Generated (Real Gmail SMTP is not configured).`}
-                          </span>
-                        </div>
-                        {!testEmailDetails?.smtpConfigured && (
-                          <div style={{ fontSize: '0.68rem', fontWeight: 400, color: '#92400E', lineHeight: 1.35 }}>
-                            To receive genuine emails in your inbox, set <code>SMTP_USER</code> and <code>SMTP_PASS</code> (16-char Google App Password) in <code>backend/.env</code>.
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {testEmailStatus === 'error' && (
-                      <div style={{
-                        fontSize: '0.72rem',
-                        color: 'var(--brand-red)',
-                        fontWeight: 600,
-                        background: 'var(--brand-red-bg)',
-                        padding: '6px 10px',
-                        borderRadius: 'var(--radius-xs)'
-                      }}>
-                        Could not dispatch test email. Please check network and backend logs.
-                      </div>
-                    )}
-
-                    <div style={{
-                      fontSize: '0.7rem',
-                      color: 'var(--text-dim)',
-                      lineHeight: 1.4,
-                      background: 'var(--bg-muted)',
-                      padding: '8px 10px',
-                      borderRadius: 'var(--radius-xs)'
-                    }}>
-                      💡 <strong>Automated Delivery:</strong> Recipient set to <code>{formData.alert_email_recipient || 'yochitcheedella@gmail.com, nishapanneerv@gmail.com'}</code>. To connect live Gmail SMTP, set <code>SMTP_USER</code> and <code>SMTP_PASS</code> (App Password) in <code>backend/.env</code>.
                     </div>
                   </div>
                 </div>
@@ -609,12 +528,17 @@ export default function SettingsModal({
                     <Check size={14} /> Saved configuration!
                   </span>
                 )}
+                {saveError && (
+                  <span style={{ fontSize: '0.78rem', color: 'var(--error)', fontWeight: 600 }}>
+                    {saveError}
+                  </span>
+                )}
                 <button type="button" onClick={onClose} className="btn btn-outline btn-sm">
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary btn-sm">
-                  <Save size={14} />
-                  <span>Save Configuration</span>
+                <button type="submit" disabled={isSaving} className="btn btn-primary btn-sm">
+                  {isSaving ? <RefreshCw size={14} className="spin" /> : <Save size={14} />}
+                  <span>{isSaving ? 'Saving...' : 'Save Configuration'}</span>
                 </button>
               </div>
             </form>

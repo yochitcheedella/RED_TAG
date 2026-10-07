@@ -31,9 +31,15 @@ async function assert(testName, condition, detail = '') {
 }
 
 async function getLatestEvent(n = 1) {
-  const res = await fetch(`${BASE_URL}/events?limit=${n}`);
+  const res = await fetch(`${BASE_URL}/events?limit=${Math.max(n * 5, 25)}`);
   const events = await res.json();
-  return n === 1 ? events[0] : events;
+  const placementEvents = Array.isArray(events)
+    ? events.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT' || e.event_type === 'UNAUTHORIZED_PLACEMENT')
+    : [];
+  if (n === 1) {
+    return placementEvents[0] || events[0];
+  }
+  return placementEvents.slice(0, n);
 }
 
 async function getStatus() {
@@ -67,6 +73,9 @@ async function runAllTests() {
   console.log(' 🏁  RED TAG AREA MONITORING SYSTEM — ACCEPTANCE TEST SUITE');
   console.log('     Sections 45–79 | Golden Tests 1–5 | Groups A–R');
   console.log('═══════════════════════════════════════════════════════════════════\n');
+
+  // Ensure clean test baseline
+  try { await clearObjects(); } catch (_) {}
 
   // ── SECTION 1: SYSTEM HEALTH ──────────────────────────────────────────────
   console.log('▶ [SYSTEM] Backend Health Check...');

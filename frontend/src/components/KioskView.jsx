@@ -2,15 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { CreditCard, CheckCircle2, AlertTriangle, ShieldCheck, Lock, RotateCcw, ArrowRight } from 'lucide-react';
 
 const DURATION_PRESETS = [
-  { value: 5, label: '5 Min' },
-  { value: 15, label: '15 Min' },
-  { value: 30, label: '30 Min' },
-  { value: 60, label: '1 Hour' },
-  { value: 1440, label: '24 Hours' },
-  { value: 10080, label: '7 Days' }
+  { value: 1, label: '1 Min' },
+  { value: 2, label: '2 Min (Max Preset)' }
 ];
 
-export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptureCurrentFrame, onGetActiveTracker }) {
+export default function KioskView({ socket, isPaused = false, onOpenAdmin, onOpenOperator, onOpenSupervisor, onOpenUser, onCaptureCurrentFrame, onGetActiveTracker }) {
   // Kiosk step: 'WAITING_RFID' | 'RFID_VERIFIED' | 'PLACEMENT_ACTIVE' | 'PLACEMENT_COMPLETED'
   const [step, setStep] = useState('WAITING_RFID');
   const [errorMsg, setErrorMsg] = useState(null);
@@ -21,7 +17,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
   // Customizable Placement Duration State
   const [isCustomDuration, setIsCustomDuration] = useState(false);
-  const [customValue, setCustomValue] = useState('30');
+  const [customValue, setCustomValue] = useState('10');
   const [customUnit, setCustomUnit] = useState('minutes'); // 'minutes' | 'hours' | 'days'
 
   // Item Details Form State
@@ -30,12 +26,12 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     serial_number: '',
     description: '',
     reason: '',
-    duration_min: 5
+    duration_min: 2
   });
 
   // Active Placement State
   const [activeItem, setActiveItem] = useState(null);
-  const [timeRemainingSec, setTimeRemainingSec] = useState(300);
+  const [timeRemainingSec, setTimeRemainingSec] = useState(120);
   const [completedPlacement, setCompletedPlacement] = useState(null);
   const [autoResetSec, setAutoResetSec] = useState(5);
   const [isConfirmingPlacement, setIsConfirmingPlacement] = useState(false);
@@ -65,7 +61,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
       serial_number: '',
       description: '',
       reason: '',
-      duration_min: 5
+      duration_min: 2
     });
     setActiveItem(null);
     setCompletedPlacement(null);
@@ -73,15 +69,31 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     setErrorMsg(preserveError);
   };
 
+  // If kiosk is paused (e.g. login modal open), ensure background registration form is not active
+  useEffect(() => {
+    if (isPaused && step === 'RFID_VERIFIED') {
+      resetKiosk();
+    }
+  }, [isPaused, step]);
+
   // 1. USB HID RFID Scanner Listener for the Kiosk
   useEffect(() => {
     let scanBuffer = '';
     let lastKeyTime = Date.now();
 
     const handleKeyDown = (e) => {
-      // If typing inside an input field during form entry, don't capture as card swipe
+      // If modal or other overlay is active, ignore all kiosk scans
+      if (isPaused) {
+        return;
+      }
+
+      // If typing inside an input/textarea/select field (or inside modal), don't capture as kiosk swipe
       const activeTag = document.activeElement?.tagName;
-      if (step !== 'WAITING_RFID' && (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT')) {
+      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') {
+        return;
+      }
+
+      if (step !== 'WAITING_RFID') {
         return;
       }
 
@@ -105,7 +117,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [step]);
+  }, [step, isPaused]);
 
   // 2. Socket.IO Listeners for hardware scan & AI placement confirmation
   useEffect(() => {
@@ -113,7 +125,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
     // Listen for hardware RFID scan broadcast
     const onRfidScanned = (data) => {
-      if (step === 'WAITING_RFID' && data?.uid) {
+      if (!isPaused && step === 'WAITING_RFID' && data?.uid) {
         handleVerifyCard(data.uid);
       }
     };
@@ -145,7 +157,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
       socket.off('kiosk_placement_success', onKioskSuccess);
       socket.off('kiosk_item_detected', onItemDetected);
     };
-  }, [socket, step]);
+  }, [socket, step, isPaused]);
 
   // Verify RFID Badge via backend kiosk endpoint
   const handleVerifyCard = async (uid) => {
@@ -289,7 +301,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     let imageBase64 = null;
     if (typeof onCaptureCurrentFrame === 'function') {
       try {
-        imageBase64 = onCaptureCurrentFrame({ sessionStart });
+        imageBase64 = onCaptureCurrentFrame({ sessionStart, itemName: activeItem.item_name, isAuthorized: true });
       } catch (err) {
         console.warn('Could not grab camera frame from local monitor:', err);
       }
@@ -299,7 +311,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     let trackerInfo = null;
     if (typeof onGetActiveTracker === 'function') {
       try {
-        trackerInfo = onGetActiveTracker({ sessionStart });
+        trackerInfo = onGetActiveTracker({ sessionStart, itemName: activeItem.item_name, isAuthorized: true });
       } catch (err) {
         console.warn('Could not grab active tracker:', err);
       }
@@ -360,55 +372,106 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
     <div style={{
       minHeight: '100vh',
       width: '100vw',
-      background: 'radial-gradient(ellipse at top, #161b26 0%, #090d16 100%)',
-      color: '#F8FAFC',
+      background: 'var(--bg-core)',
+      color: 'var(--text-primary)',
       display: 'flex',
       flexDirection: 'column',
       justifyContent: 'space-between',
       alignItems: 'center',
-      padding: '24px 20px',
+      padding: '0 0 24px 0',
       boxSizing: 'border-box',
       fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
       userSelect: 'none'
     }}>
-      {/* Top Header / Kiosk Branding */}
+      {/* Top Header / Kiosk Branding (Full-width, Light Theme) */}
       <header style={{
         width: '100%',
-        maxWidth: '820px',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-        paddingBottom: '16px'
+        flexWrap: 'wrap',
+        gap: '12px',
+        background: '#FFFFFF',
+        borderBottom: '1px solid var(--border-subtle)',
+        padding: '12px 24px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        boxSizing: 'border-box'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {/* Left: Brand & Kiosk Title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+          {/* Nokia Wordmark */}
+          <svg
+            width="105"
+            height="22"
+            viewBox="0 0 338.667 79.687"
+            fill="#005AFF"
+            xmlns="http://www.w3.org/2000/svg"
+            style={{ display: 'block' }}
+          >
+            <path d="M114.194 1.145c-21.865 0-38.831 15.914-38.831 38.698 0 23.81 16.965 38.699 38.831 38.698s38.866-14.889 38.831-38.698c-.032-21.587-16.965-38.698-38.831-38.698zm0 10.654c15.258 0 27.627 11.484 27.627 28.044 0 16.867-12.369 28.045-27.627 28.045S86.567 56.709 86.567 39.843c0-16.561 12.369-28.044 27.627-28.044zm119.913-9.376v74.839h11.224V2.423zm-30.985 0l-41.655 37.419 41.655 37.42h16.702l-41.718-37.42 41.718-37.419zM296.843 0l-6.092 11.252 20.667 38.388h-41.447l-14.953 27.623h12.348l9.03-16.573h40.895l9.029 16.573h12.347zM0 0v77.263h11.455v-51.06L70.98 79.686V63.667z" />
+          </svg>
+
+          <div style={{ width: '1px', height: '20px', background: 'var(--border-medium)' }} />
+
           <div style={{
             background: 'linear-gradient(135deg, #DC2626 0%, #991B1B 100%)',
             color: '#FFF',
-            padding: '6px 12px',
+            padding: '5px 11px',
             borderRadius: '6px',
             fontWeight: 800,
-            fontSize: '0.85rem',
-            letterSpacing: '1.5px',
-            boxShadow: '0 0 15px rgba(220, 38, 38, 0.4)'
+            fontSize: '0.82rem',
+            letterSpacing: '1.2px',
+            boxShadow: '0 2px 8px rgba(220, 38, 38, 0.3)',
+            whiteSpace: 'nowrap'
           }}>
             RED TAG AREA
           </div>
-          <span style={{ fontSize: '0.82rem', color: '#94A3B8', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', letterSpacing: '0.5px', textTransform: 'uppercase', fontWeight: 600, whiteSpace: 'nowrap' }}>
             Physical Drop-off Kiosk
           </span>
         </div>
 
-        {/* Portal Access Buttons */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {/* Operator Portal Button */}
+        {/* Right: Portal Access Buttons (completely to the right) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          {/* Employee Placement Portal Button */}
+          {(onOpenUser || onOpenOperator) && (
+            <button
+              onClick={onOpenUser || onOpenOperator}
+              title="Employee Placement Dashboard"
+              style={{
+                background: 'rgba(0, 90, 255, 0.08)',
+                border: '1px solid rgba(0, 90, 255, 0.25)',
+                color: '#005AFF',
+                borderRadius: '8px',
+                padding: '7px 12px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '0.78rem',
+                fontWeight: 600,
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(0, 90, 255, 0.16)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(0, 90, 255, 0.08)';
+              }}
+            >
+              <CreditCard size={14} color="#005AFF" />
+              <span>Employee Portal</span>
+            </button>
+          )}
+
+          {/* Supervisor Portal Button */}
           <button
-            onClick={onOpenOperator}
-            title="Operator Portal Login"
+            onClick={onOpenSupervisor || onOpenOperator}
+            title="Supervisor Operations Console"
             style={{
-              background: 'rgba(37, 99, 235, 0.1)',
+              background: 'rgba(37, 99, 235, 0.08)',
               border: '1px solid rgba(37, 99, 235, 0.25)',
-              color: '#93C5FD',
+              color: '#2563EB',
               borderRadius: '8px',
               padding: '7px 12px',
               cursor: 'pointer',
@@ -420,18 +483,14 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               transition: 'all 0.2s ease'
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = '#FFFFFF';
-              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.25)';
-              e.currentTarget.style.borderColor = 'rgba(37, 99, 235, 0.5)';
+              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.16)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = '#93C5FD';
-              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.1)';
-              e.currentTarget.style.borderColor = 'rgba(37, 99, 235, 0.25)';
+              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.08)';
             }}
           >
-            <ShieldCheck size={14} color="#60A5FA" />
-            <span>Operator Portal</span>
+            <ShieldCheck size={14} color="#2563EB" />
+            <span>Supervisor Portal</span>
           </button>
 
           {/* Admin Lock Access */}
@@ -439,9 +498,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
             onClick={onOpenAdmin}
             title="Administrator Login"
             style={{
-              background: 'rgba(255, 255, 255, 0.04)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              color: '#94A3B8',
+              background: 'rgba(220, 38, 38, 0.08)',
+              border: '1px solid rgba(220, 38, 38, 0.25)',
+              color: '#DC2626',
               borderRadius: '8px',
               padding: '7px 12px',
               cursor: 'pointer',
@@ -449,18 +508,17 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               alignItems: 'center',
               gap: '6px',
               fontSize: '0.78rem',
+              fontWeight: 600,
               transition: 'all 0.2s ease'
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = '#CBD5E1';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+              e.currentTarget.style.background = 'rgba(220, 38, 38, 0.16)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = '#94A3B8';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+              e.currentTarget.style.background = 'rgba(220, 38, 38, 0.08)';
             }}
           >
-            <Lock size={13} />
+            <Lock size={13} color="#DC2626" />
             <span>Admin Portal</span>
           </button>
         </div>
@@ -481,9 +539,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         {errorMsg && (
           <div style={{
             width: '100%',
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
-            color: '#FCA5A5',
+            background: 'var(--brand-red-bg)',
+            border: '1px solid var(--brand-red-border)',
+            color: 'var(--brand-red-dark)',
             padding: '12px 16px',
             borderRadius: '10px',
             marginBottom: '20px',
@@ -493,7 +551,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
             fontSize: '0.9rem',
             animation: 'fadeIn 0.3s ease'
           }}>
-            <AlertTriangle size={18} color="#EF4444" />
+            <AlertTriangle size={18} color="#D92D20" />
             <span>{errorMsg}</span>
           </div>
         )}
@@ -504,22 +562,21 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         {step === 'WAITING_RFID' && (
           <div style={{
             width: '100%',
-            background: 'rgba(15, 23, 42, 0.65)',
-            backdropFilter: 'blur(16px)',
-            border: '1px solid rgba(255, 255, 255, 0.1)',
-            borderRadius: '20px',
+            background: '#FFFFFF',
+            border: '1px solid var(--border-medium)',
+            borderRadius: '16px',
             padding: '48px 36px',
             textAlign: 'center',
-            boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)',
+            boxShadow: 'var(--shadow-card-elevated)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             gap: '24px'
           }}>
             <div style={{
-              fontSize: '1rem',
-              fontWeight: 700,
-              color: '#EF4444',
+              fontSize: '0.9rem',
+              fontWeight: 800,
+              color: '#D92D20',
               letterSpacing: '2px',
               textTransform: 'uppercase'
             }}>
@@ -530,7 +587,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               fontSize: '2.1rem',
               fontWeight: 800,
               margin: '0',
-              color: '#FFFFFF',
+              color: 'var(--text-primary)',
               letterSpacing: '-0.5px'
             }}>
               PLEASE SCAN YOUR RFID
@@ -538,7 +595,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
             <p style={{
               fontSize: '0.95rem',
-              color: '#94A3B8',
+              color: 'var(--text-secondary)',
               maxWidth: '380px',
               lineHeight: 1.5,
               margin: 0
@@ -561,28 +618,28 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                 position: 'absolute',
                 inset: 0,
                 borderRadius: '50%',
-                border: '2px dashed rgba(239, 68, 68, 0.3)',
+                border: '2px dashed rgba(217, 45, 32, 0.35)',
                 animation: 'spin 20s linear infinite'
               }} />
               <div style={{
                 position: 'absolute',
                 inset: '14px',
                 borderRadius: '50%',
-                background: 'radial-gradient(circle, rgba(239, 68, 68, 0.18) 0%, rgba(239, 68, 68, 0) 70%)',
+                background: 'radial-gradient(circle, rgba(217, 45, 32, 0.12) 0%, rgba(217, 45, 32, 0) 70%)',
                 animation: 'pulse 2.2s ease-in-out infinite'
               }} />
               <div style={{
                 width: '84px',
                 height: '84px',
                 borderRadius: '20px',
-                background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.25) 0%, rgba(185, 28, 28, 0.15) 100%)',
-                border: '1px solid rgba(239, 68, 68, 0.5)',
+                background: 'linear-gradient(135deg, rgba(217, 45, 32, 0.1) 0%, rgba(217, 45, 32, 0.04) 100%)',
+                border: '1.5px solid rgba(217, 45, 32, 0.35)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 0 25px rgba(239, 68, 68, 0.35)'
+                boxShadow: '0 8px 20px rgba(217, 45, 32, 0.15)'
               }}>
-                <CreditCard size={42} color="#F87171" />
+                <CreditCard size={42} color="#D92D20" />
               </div>
             </div>
 
@@ -590,14 +647,15 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              color: '#64748B',
-              fontSize: '0.8rem',
-              background: 'rgba(255, 255, 255, 0.03)',
+              color: 'var(--success)',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              background: 'var(--success-bg)',
               padding: '6px 14px',
               borderRadius: '20px',
-              border: '1px solid rgba(255, 255, 255, 0.06)'
+              border: '1px solid var(--success-border)'
             }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)', display: 'inline-block' }} />
               <span>RFID Scanner Active & Ready</span>
             </div>
           </div>
@@ -609,12 +667,11 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         {step === 'RFID_VERIFIED' && verifiedEmployee && (
           <div style={{
             width: '100%',
-            background: 'rgba(15, 23, 42, 0.75)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(255, 255, 255, 0.12)',
-            borderRadius: '20px',
+            background: '#FFFFFF',
+            border: '1px solid var(--border-medium)',
+            borderRadius: '16px',
             padding: '32px 32px',
-            boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6)'
+            boxShadow: 'var(--shadow-card-elevated)'
           }}>
             {/* Verified Header Badge */}
             <div style={{
@@ -622,7 +679,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               justifyContent: 'space-between',
               alignItems: 'flex-start',
               paddingBottom: '20px',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              borderBottom: '1px solid var(--border-subtle)',
               marginBottom: '24px'
             }}>
               <div>
@@ -630,7 +687,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                   display: 'flex',
                   alignItems: 'center',
                   gap: '8px',
-                  color: '#10B981',
+                  color: 'var(--success)',
                   fontWeight: 700,
                   fontSize: '0.92rem',
                   marginBottom: '8px'
@@ -638,11 +695,11 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                   <CheckCircle2 size={20} />
                   <span>✓ RFID VERIFIED</span>
                 </div>
-                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#FFF' }}>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>
                   {verifiedEmployee.name}
                 </div>
-                <div style={{ fontSize: '0.82rem', color: '#94A3B8', marginTop: '3px' }}>
-                  Department: <strong style={{ color: '#E2E8F0' }}>{verifiedEmployee.department || 'AI & DS'}</strong>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                  Department: <strong style={{ color: 'var(--text-secondary)' }}>{verifiedEmployee.department || 'AI & DS'}</strong>
                 </div>
               </div>
 
@@ -650,9 +707,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                 type="button"
                 onClick={() => resetKiosk()}
                 style={{
-                  background: 'rgba(255, 255, 255, 0.05)',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  color: '#94A3B8',
+                  background: 'var(--bg-muted)',
+                  border: '1px solid var(--border-medium)',
+                  color: 'var(--text-secondary)',
                   padding: '6px 12px',
                   borderRadius: '6px',
                   cursor: 'pointer',
@@ -669,12 +726,12 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
             {/* Item Details Form */}
             <form onSubmit={handleSubmitItem} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, letterSpacing: '1px', color: '#94A3B8', textTransform: 'uppercase' }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 700, letterSpacing: '1px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
                 ITEM DETAILS
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
                   Item Name *
                 </label>
                 <input
@@ -688,71 +745,124 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                     width: '100%',
                     padding: '11px 14px',
                     borderRadius: '8px',
-                    background: 'rgba(0, 0, 0, 0.35)',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    color: '#FFF',
+                    background: '#FFFFFF',
+                    border: '1px solid var(--border-medium)',
+                    color: 'var(--text-primary)',
                     fontSize: '0.92rem',
                     boxSizing: 'border-box'
                   }}
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0', marginBottom: '6px' }}>
-                    Item / Serial Number
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>Placement Time</span>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--info)', background: 'var(--info-bg)', border: '1px solid var(--info-border)', padding: '1px 6px', borderRadius: '4px' }}>
+                      Preset Max 2 Min
+                    </span>
                   </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. HP-2045 or Batch #8"
-                    value={formData.serial_number}
-                    onChange={(e) => setFormData({ ...formData, serial_number: e.target.value })}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      background: 'rgba(0, 0, 0, 0.35)',
-                      border: '1px solid rgba(255, 255, 255, 0.15)',
-                      color: '#FFF',
-                      fontSize: '0.9rem',
-                      boxSizing: 'border-box'
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !isCustomDuration;
+                      setIsCustomDuration(next);
+                      if (!next) {
+                        setFormData(prev => ({ ...prev, duration_min: 2 }));
+                      } else {
+                        const parsed = parseInt(customValue, 10);
+                        const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 5;
+                        setCustomValue(String(validVal));
+                        const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                        setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
+                      }
                     }}
-                  />
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--info)',
+                      fontSize: '0.72rem',
+                      cursor: 'pointer',
+                      padding: 0,
+                      textDecoration: 'underline'
+                    }}
+                  >
+                    {isCustomDuration ? '← Use Presets (1-2m)' : '+ Custom Time'}
+                  </button>
                 </div>
 
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0' }}>
-                      Placement Time
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = !isCustomDuration;
-                        setIsCustomDuration(next);
-                        if (!next) {
-                          setFormData(prev => ({ ...prev, duration_min: 5 }));
-                        } else {
-                          const parsed = parseInt(customValue, 10);
-                          const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 30;
-                          setCustomValue(String(validVal));
-                          const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
-                          setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
-                        }
-                      }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#60A5FA',
-                        fontSize: '0.72rem',
-                        cursor: 'pointer',
-                        padding: 0,
-                        textDecoration: 'underline'
-                      }}
-                    >
-                      {isCustomDuration ? 'Use Presets' : 'Custom Time'}
-                    </button>
-                  </div>
+                {/* Quick Preset Buttons (1 Min, 2 Min Max + Custom) */}
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                  {DURATION_PRESETS.map((opt) => {
+                    const isSelected = !isCustomDuration && formData.duration_min === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setIsCustomDuration(false);
+                          setFormData(prev => ({ ...prev, duration_min: opt.value }));
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '8px 4px',
+                          borderRadius: '6px',
+                          background: isSelected
+                            ? '#2563EB'
+                            : 'var(--bg-muted)',
+                          border: isSelected
+                            ? '1px solid #1D4ED8'
+                            : '1px solid var(--border-medium)',
+                          color: isSelected ? '#FFF' : 'var(--text-secondary)',
+                          fontSize: '0.78rem',
+                          fontWeight: isSelected ? 700 : 500,
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        <span>{opt.value} Min</span>
+                        {opt.value === 2 && (
+                          <span style={{ fontSize: '0.65rem', opacity: isSelected ? 0.9 : 0.7, fontWeight: 700 }}>
+                            (Max)
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomDuration(true);
+                      const parsed = parseInt(customValue, 10);
+                      const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 5;
+                      setCustomValue(String(validVal));
+                      const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
+                      setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
+                    }}
+                    style={{
+                      flex: 1.2,
+                      padding: '8px 6px',
+                      borderRadius: '6px',
+                      background: isCustomDuration
+                        ? '#7C3AED'
+                        : 'var(--bg-muted)',
+                      border: isCustomDuration
+                        ? '1px solid #6D28D9'
+                        : '1px solid var(--border-medium)',
+                      color: isCustomDuration ? '#FFF' : 'var(--text-secondary)',
+                      fontSize: '0.78rem',
+                      fontWeight: isCustomDuration ? 700 : 500,
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    ⚙ Custom
+                  </button>
+                </div>
 
                   {!isCustomDuration ? (
                     <select
@@ -762,7 +872,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                         if (val === 'custom') {
                           setIsCustomDuration(true);
                           const parsed = parseInt(customValue, 10);
-                          const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 30;
+                          const validVal = (!isNaN(parsed) && parsed > 0) ? parsed : 10;
                           setCustomValue(String(validVal));
                           const multiplier = customUnit === 'days' ? 1440 : customUnit === 'hours' ? 60 : 1;
                           setFormData(prev => ({ ...prev, duration_min: validVal * multiplier }));
@@ -772,12 +882,12 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                       }}
                       style={{
                         width: '100%',
-                        padding: '10px 14px',
+                        padding: '9px 12px',
                         borderRadius: '8px',
-                        background: 'rgba(15, 23, 42, 0.9)',
-                        border: '1px solid rgba(255, 255, 255, 0.15)',
-                        color: '#FFF',
-                        fontSize: '0.9rem',
+                        background: '#FFFFFF',
+                        border: '1px solid var(--border-medium)',
+                        color: 'var(--text-primary)',
+                        fontSize: '0.85rem',
                         boxSizing: 'border-box'
                       }}
                     >
@@ -786,7 +896,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                           {opt.label}
                         </option>
                       ))}
-                      <option value="custom">Custom Duration...</option>
+                      <option value="custom">⚙ Custom Duration (Extended)...</option>
                     </select>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -804,9 +914,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                             width: '36px',
                             height: '38px',
                             borderRadius: '8px',
-                            background: 'rgba(255, 255, 255, 0.1)',
-                            border: '1px solid rgba(255, 255, 255, 0.2)',
-                            color: '#FFF',
+                            background: 'var(--bg-muted)',
+                            border: '1px solid var(--border-medium)',
+                            color: 'var(--text-primary)',
                             fontSize: '1.2rem',
                             fontWeight: 'bold',
                             cursor: 'pointer',
@@ -823,7 +933,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                           min="1"
                           max="9999"
                           value={customValue}
-                          placeholder="30"
+                          placeholder="10"
                           onChange={(e) => {
                             const raw = e.target.value;
                             setCustomValue(raw);
@@ -844,9 +954,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                             width: '76px',
                             padding: '10px 8px',
                             borderRadius: '8px',
-                            background: 'rgba(0, 0, 0, 0.35)',
-                            border: '1px solid rgba(255, 255, 255, 0.25)',
-                            color: '#FFF',
+                            background: '#FFFFFF',
+                            border: '1px solid var(--border-medium)',
+                            color: 'var(--text-primary)',
                             fontSize: '1rem',
                             fontWeight: 700,
                             textAlign: 'center',
@@ -866,9 +976,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                             width: '36px',
                             height: '38px',
                             borderRadius: '8px',
-                            background: 'rgba(255, 255, 255, 0.1)',
-                            border: '1px solid rgba(255, 255, 255, 0.2)',
-                            color: '#FFF',
+                            background: 'var(--bg-muted)',
+                            border: '1px solid var(--border-medium)',
+                            color: 'var(--text-primary)',
                             fontSize: '1.2rem',
                             fontWeight: 'bold',
                             cursor: 'pointer',
@@ -894,9 +1004,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                             flex: 1,
                             padding: '10px 12px',
                             borderRadius: '8px',
-                            background: 'rgba(15, 23, 42, 0.9)',
-                            border: '1px solid rgba(255, 255, 255, 0.2)',
-                            color: '#FFF',
+                            background: '#FFFFFF',
+                            border: '1px solid var(--border-medium)',
+                            color: 'var(--text-primary)',
                             fontSize: '0.85rem'
                           }}
                         >
@@ -906,9 +1016,10 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                         </select>
                       </div>
 
-                      {/* Quick preset buttons for touch/fast entry */}
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      {/* Quick custom shortcut chips for extended placement */}
+                      <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
                         {[
+                          { label: '10m', val: 10, unit: 'minutes' },
                           { label: '15m', val: 15, unit: 'minutes' },
                           { label: '30m', val: 30, unit: 'minutes' },
                           { label: '45m', val: 45, unit: 'minutes' },
@@ -928,10 +1039,10 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                             }}
                             style={{
                               padding: '4px 8px',
-                              borderRadius: '6px',
-                              background: 'rgba(255, 255, 255, 0.08)',
-                              border: '1px solid rgba(255, 255, 255, 0.15)',
-                              color: '#94A3B8',
+                              borderRadius: '5px',
+                              background: 'var(--bg-muted)',
+                              border: '1px solid var(--border-medium)',
+                              color: 'var(--text-secondary)',
                               fontSize: '0.72rem',
                               fontWeight: 600,
                               cursor: 'pointer'
@@ -944,15 +1055,17 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                     </div>
                   )}
 
-                  <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '4px' }}>
-                    Active window: <strong style={{ color: '#38BDF8' }}>{formData.duration_min} minutes</strong>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '5px' }}>
+                    Active window: <strong style={{ color: 'var(--info)' }}>{formData.duration_min} minutes</strong>
                     {formData.duration_min >= 60 && ` (${(formData.duration_min / 60).toFixed(1)} hrs)`}
+                    <span style={{ marginLeft: '8px', color: 'var(--text-muted)' }}>
+                      {formData.duration_min <= 2 ? '(Standard Preset)' : '(Custom Extended)'}
+                    </span>
                   </div>
                 </div>
-              </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0', marginBottom: '6px' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
                   Reason for Placement *
                 </label>
                 <input
@@ -965,31 +1078,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                     width: '100%',
                     padding: '10px 14px',
                     borderRadius: '8px',
-                    background: 'rgba(0, 0, 0, 0.35)',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    color: '#FFF',
-                    fontSize: '0.9rem',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#E2E8F0', marginBottom: '6px' }}>
-                  Description (Optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Pressure valve gasket replacement required"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  style={{
-                    width: '100%',
-                    padding: '10px 14px',
-                    borderRadius: '8px',
-                    background: 'rgba(0, 0, 0, 0.35)',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    color: '#FFF',
+                    background: '#FFFFFF',
+                    border: '1px solid var(--border-medium)',
+                    color: 'var(--text-primary)',
                     fontSize: '0.9rem',
                     boxSizing: 'border-box'
                   }}
@@ -1009,7 +1100,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                   fontWeight: 700,
                   fontSize: '1rem',
                   cursor: isLoading ? 'wait' : 'pointer',
-                  boxShadow: '0 6px 20px rgba(37, 99, 235, 0.4)',
+                  boxShadow: '0 4px 14px rgba(37, 99, 235, 0.35)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1030,21 +1121,21 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         {step === 'PLACEMENT_ACTIVE' && activeItem && (
           <div style={{
             width: '100%',
-            background: 'rgba(15, 23, 42, 0.75)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(59, 130, 246, 0.3)',
-            borderRadius: '20px',
+            background: '#FFFFFF',
+            border: '1px solid var(--border-medium)',
+            borderRadius: '16px',
             padding: '44px 36px',
             textAlign: 'center',
-            boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6)',
+            boxShadow: 'var(--shadow-card-elevated)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             gap: '20px'
           }}>
             <div style={{
-              background: 'rgba(59, 130, 246, 0.15)',
-              color: '#60A5FA',
+              background: 'var(--info-bg)',
+              color: 'var(--info)',
+              border: '1px solid var(--info-border)',
               padding: '6px 16px',
               borderRadius: '20px',
               fontSize: '0.85rem',
@@ -1055,11 +1146,11 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               PLACEMENT ACTIVE
             </div>
 
-            <div style={{ fontSize: '1.35rem', fontWeight: 800, color: '#FFFFFF' }}>
-              Item: <span style={{ color: '#93C5FD' }}>{activeItem.item_name}</span>
+            <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+              Item: <span style={{ color: 'var(--info)' }}>{activeItem.item_name}</span>
             </div>
 
-            <div style={{ fontSize: '0.85rem', color: '#94A3B8', marginTop: '-10px' }}>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '-10px' }}>
               Time Remaining
             </div>
 
@@ -1068,45 +1159,45 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               fontSize: '4.2rem',
               fontFamily: 'monospace',
               fontWeight: 900,
-              color: timeRemainingSec < 60 ? '#EF4444' : '#F8FAFC',
+              color: timeRemainingSec < 60 ? '#D92D20' : 'var(--text-primary)',
               letterSpacing: '2px',
-              textShadow: timeRemainingSec < 60 ? '0 0 25px rgba(239, 68, 68, 0.6)' : '0 0 25px rgba(59, 130, 246, 0.4)',
-              background: 'rgba(0, 0, 0, 0.3)',
+              background: 'var(--bg-card-hover)',
               padding: '16px 40px',
               borderRadius: '16px',
-              border: '1px solid rgba(255, 255, 255, 0.1)'
+              border: '1px solid var(--border-medium)',
+              boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.04)'
             }}>
               {formatTime(timeRemainingSec)}
             </div>
 
             <div style={{
               fontSize: '1.05rem',
-              color: '#CBD5E1',
+              color: 'var(--text-secondary)',
               maxWidth: '380px',
               lineHeight: 1.5,
               fontWeight: 500
             }}>
-              Please place your item in the <strong>Red Tag Area</strong> floor polygon now.
+              Please place your item in the <strong style={{ color: '#D92D20' }}>Red Tag Area</strong> floor polygon now.
             </div>
 
             <div style={{
               display: 'flex',
               alignItems: 'center',
               gap: '10px',
-              background: itemDetectedInROI ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.04)',
-              border: itemDetectedInROI ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(255, 255, 255, 0.08)',
+              background: itemDetectedInROI ? 'var(--success-bg)' : 'var(--bg-muted)',
+              border: itemDetectedInROI ? '1px solid var(--success-border)' : '1px solid var(--border-medium)',
               padding: '10px 18px',
               borderRadius: '10px',
               fontSize: '0.85rem',
-              color: itemDetectedInROI ? '#34D399' : '#94A3B8',
+              color: itemDetectedInROI ? 'var(--success)' : 'var(--text-secondary)',
               fontWeight: itemDetectedInROI ? 700 : 500
             }}>
               <span style={{
                 width: '10px',
                 height: '10px',
                 borderRadius: '50%',
-                background: itemDetectedInROI ? '#10B981' : '#3B82F6',
-                boxShadow: itemDetectedInROI ? '0 0 10px #10B981' : 'none',
+                background: itemDetectedInROI ? 'var(--success)' : '#2563EB',
+                boxShadow: itemDetectedInROI ? '0 0 10px rgba(22, 128, 60, 0.5)' : 'none',
                 animation: itemDetectedInROI ? 'none' : 'pulse 1.5s infinite',
                 display: 'inline-block'
               }} />
@@ -1139,8 +1230,8 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                 letterSpacing: '1px',
                 cursor: isConfirmingPlacement ? 'wait' : 'pointer',
                 boxShadow: itemDetectedInROI
-                  ? '0 10px 30px rgba(16, 185, 129, 0.5)'
-                  : '0 10px 30px rgba(37, 99, 235, 0.4)',
+                  ? '0 8px 24px rgba(16, 185, 129, 0.4)'
+                  : '0 8px 24px rgba(37, 99, 235, 0.35)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1153,7 +1244,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               <span>{isConfirmingPlacement ? 'CAPTURING EVIDENCE...' : 'OBJECT PLACED'}</span>
             </button>
 
-            <div style={{ fontSize: '0.82rem', color: '#94A3B8', maxWidth: '360px', lineHeight: 1.4 }}>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', maxWidth: '360px', lineHeight: 1.4 }}>
               After placing your item in the Red Tag polygon, click <strong>"OBJECT PLACED"</strong> to capture photographic evidence and conclude the session.
             </div>
 
@@ -1171,9 +1262,9 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               }}
               style={{
                 marginTop: '8px',
-                background: 'transparent',
-                border: '1px solid rgba(255, 255, 255, 0.15)',
-                color: '#94A3B8',
+                background: 'var(--bg-muted)',
+                border: '1px solid var(--border-medium)',
+                color: 'var(--text-secondary)',
                 padding: '8px 18px',
                 borderRadius: '8px',
                 cursor: 'pointer',
@@ -1191,13 +1282,12 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
         {step === 'PLACEMENT_COMPLETED' && (
           <div style={{
             width: '100%',
-            background: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(20px)',
-            border: '1px solid rgba(16, 185, 129, 0.4)',
-            borderRadius: '20px',
+            background: '#FFFFFF',
+            border: '1px solid var(--border-medium)',
+            borderRadius: '16px',
             padding: '48px 36px',
             textAlign: 'center',
-            boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6)',
+            boxShadow: 'var(--shadow-card-elevated)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -1207,20 +1297,20 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
               width: '76px',
               height: '76px',
               borderRadius: '50%',
-              background: 'rgba(16, 185, 129, 0.15)',
-              border: '2px solid #10B981',
+              background: 'var(--success-bg)',
+              border: '2px solid var(--success)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 0 30px rgba(16, 185, 129, 0.35)'
+              boxShadow: '0 0 20px rgba(22, 128, 60, 0.2)'
             }}>
-              <CheckCircle2 size={42} color="#10B981" />
+              <CheckCircle2 size={42} color="var(--success)" />
             </div>
 
             <h2 style={{
               fontSize: '1.8rem',
               fontWeight: 800,
-              color: '#FFFFFF',
+              color: 'var(--text-primary)',
               margin: '0',
               letterSpacing: '-0.5px'
             }}>
@@ -1229,14 +1319,14 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
 
             <p style={{
               fontSize: '1.05rem',
-              color: '#CBD5E1',
+              color: 'var(--text-secondary)',
               maxWidth: '380px',
               lineHeight: 1.6,
               margin: '0'
             }}>
-              Your item <strong style={{ color: '#93C5FD' }}>{completedPlacement?.itemName || activeItem?.item_name}</strong> has been registered successfully.
+              Your item <strong style={{ color: 'var(--info)' }}>{completedPlacement?.itemName || activeItem?.item_name}</strong> has been registered successfully.
               <br />
-              <strong style={{ color: '#10B981' }}>You may leave the area.</strong>
+              <strong style={{ color: 'var(--success)' }}>You may leave the area.</strong>
             </p>
 
             {/* Display Captured High-Resolution Evidence Photo */}
@@ -1245,17 +1335,17 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                 marginTop: '6px',
                 borderRadius: '12px',
                 overflow: 'hidden',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
+                border: '1px solid var(--border-medium)',
                 maxWidth: '320px',
-                background: '#0B0F19',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)'
+                background: '#F8FAFC',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
               }}>
                 <img
                   src={`/evidence/${completedPlacement.evidenceImage}`}
                   alt="Captured Placement Evidence"
                   style={{ width: '100%', height: 'auto', display: 'block', maxHeight: '180px', objectFit: 'contain' }}
                 />
-                <div style={{ padding: '6px 12px', fontSize: '0.75rem', color: '#10B981', fontWeight: 600 }}>
+                <div style={{ padding: '6px 12px', fontSize: '0.75rem', color: 'var(--success)', fontWeight: 600 }}>
                   ✓ Evidence Captured: {completedPlacement.evidenceImage}
                 </div>
               </div>
@@ -1274,7 +1364,7 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
                 fontWeight: 700,
                 fontSize: '0.95rem',
                 cursor: 'pointer',
-                boxShadow: '0 4px 15px rgba(16, 185, 129, 0.4)'
+                boxShadow: '0 4px 14px rgba(16, 185, 129, 0.35)'
               }}
             >
               SCAN NEXT RFID ({autoResetSec}s)
@@ -1286,13 +1376,13 @@ export default function KioskView({ socket, onOpenAdmin, onOpenOperator, onCaptu
       {/* Kiosk Footer Privacy Notice */}
       <footer style={{
         fontSize: '0.75rem',
-        color: '#64748B',
+        color: 'var(--text-muted)',
         textAlign: 'center',
         display: 'flex',
         alignItems: 'center',
         gap: '6px'
       }}>
-        <ShieldCheck size={14} color="#10B981" />
+        <ShieldCheck size={14} color="var(--success)" />
         <span>Privacy-Protected Kiosk — Zero sensitive history or camera feeds displayed.</span>
       </footer>
     </div>

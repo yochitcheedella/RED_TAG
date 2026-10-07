@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Package, Search, ExternalLink, RefreshCw, CheckCircle, Clock, Eye, AlertCircle, X, ShieldAlert, Camera, Trash2, Download } from 'lucide-react';
+import DateRangeFilter from './DateRangeFilter';
+import { isWithinDateRange, computePresetDates } from '../utils/dateFilterUtils';
 
 export default function PlacementsManager({ adminToken, userRole = 'admin', socket, isActive = false }) {
   const [placements, setPlacements] = useState([]);
@@ -130,26 +132,95 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
     URL.revokeObjectURL(url);
   };
 
+  const [authFilter, setAuthFilter] = useState('ALL'); // ALL, AUTHORIZED, UNAUTHORIZED, NO_RFID
+  const [stateFilter, setStateFilter] = useState('ALL'); // ALL, PRESENT, REMOVED
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [appliedStartDate, setAppliedStartDate] = useState('');
+  const [appliedEndDate, setAppliedEndDate] = useState('');
+  const [quickPreset, setQuickPreset] = useState('ALL');
+
   useEffect(() => {
     fetchPlacements();
   }, [adminToken]);
 
+  const getLocalDateStr = (ts) => {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return String(ts).slice(0, 10);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch {
+      return String(ts).slice(0, 10);
+    }
+  };
+
+  const handleApplyDateRange = () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    if (!startDate && !endDate) {
+      setQuickPreset('ALL');
+    } else {
+      setQuickPreset('CUSTOM');
+    }
+  };
+
+  const handleQuickPreset = (e) => {
+    const preset = e.target.value;
+    setQuickPreset(preset);
+    const { startDate: s, endDate: end } = computePresetDates(preset);
+    setStartDate(s);
+    setEndDate(end);
+    setAppliedStartDate(s);
+    setAppliedEndDate(end);
+  };
+
   const filteredPlacements = placements.filter((p) => {
-    // Strictly display registered employee placements, excluding unauthorized/unidentified vision events
-    if (!p.employee_name || p.employee_name === 'Unidentified' || p.authorization_status !== 'AUTHORIZED') {
-      return false;
+    // Date filtering (Range: Dates : [startDate] To [endDate] [Show..])
+    const rawDate = p.placed_at || p.registered_at || p.first_seen || p.last_seen || p.timestamp || '';
+    if (!isWithinDateRange(rawDate, appliedStartDate, appliedEndDate)) return false;
+
+    // Authorization filtering
+    if (authFilter === 'AUTHORIZED' && p.authorization_status !== 'AUTHORIZED') return false;
+    if (authFilter === 'UNAUTHORIZED' && p.authorization_status === 'AUTHORIZED') return false;
+    if (authFilter === 'NO_RFID' && (p.authorization_status !== 'NO_RFID' && p.rfid_uid)) return false;
+
+    // State filtering
+    if (stateFilter === 'PRESENT' && p.state !== 'PRESENT') return false;
+    if (stateFilter === 'REMOVED' && p.state === 'PRESENT') return false;
+
+    // Text search
+    if (filterText.trim()) {
+      const q = filterText.toLowerCase();
+      return (
+        (p.employee_name || '').toLowerCase().includes(q) ||
+        (p.employee_id || '').toLowerCase().includes(q) ||
+        (p.item_name || '').toLowerCase().includes(q) ||
+        (p.department || '').toLowerCase().includes(q) ||
+        (p.serial_number || '').toLowerCase().includes(q) ||
+        (p.placement_reason || '').toLowerCase().includes(q) ||
+        (p.rfid_uid || '').toLowerCase().includes(q) ||
+        (p.object_id || '').toLowerCase().includes(q)
+      );
     }
 
-    const q = filterText.toLowerCase();
-    return (
-      (p.employee_name || '').toLowerCase().includes(q) ||
-      (p.item_name || '').toLowerCase().includes(q) ||
-      (p.department || '').toLowerCase().includes(q) ||
-      (p.serial_number || '').toLowerCase().includes(q) ||
-      (p.placement_reason || '').toLowerCase().includes(q) ||
-      (p.rfid_uid || '').toLowerCase().includes(q)
-    );
+    return true;
   });
+
+  const hasActiveFilters = filterText.trim() !== '' || authFilter !== 'ALL' || stateFilter !== 'ALL' || Boolean(appliedStartDate || appliedEndDate || startDate || endDate);
+  const resetFilters = () => {
+    setFilterText('');
+    setAuthFilter('ALL');
+    setStateFilter('ALL');
+    setStartDate('');
+    setEndDate('');
+    setAppliedStartDate('');
+    setAppliedEndDate('');
+    setQuickPreset('ALL');
+  };
 
   const formatTimestamp = (ts) => {
     if (!ts) return '—';
@@ -165,21 +236,27 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
     if (!filteredPlacements || filteredPlacements.length === 0) return;
     const headers = [
       'Placed At',
+      'Status',
+      'State',
       'Employee Name',
       'Employee ID',
       'Department',
       'Item Name',
       'Serial / ID',
+      'Duration (Min)',
       'Placement Reason',
       'RFID UID'
     ];
     const rows = filteredPlacements.map((p) => [
-      `"${formatTimestamp(p.first_seen || p.timestamp || p.registered_at)}"`,
+      `"${formatTimestamp(p.placed_at || p.registered_at || p.first_seen)}"`,
+      `"${p.authorization_status || 'UNKNOWN'}"`,
+      `"${p.state || 'PRESENT'}"`,
       `"${(p.employee_name || 'Unidentified').replace(/"/g, '""')}"`,
       `"${(p.employee_id || '—').replace(/"/g, '""')}"`,
       `"${(p.department || 'General').replace(/"/g, '""')}"`,
       `"${(p.item_name || p.object_type || '—').replace(/"/g, '""')}"`,
       `"${(p.serial_number || p.object_id || '—').replace(/"/g, '""')}"`,
+      `"${p.placement_duration_min || 2}"`,
       `"${(p.placement_reason || '—').replace(/"/g, '""')}"`,
       `"${(p.rfid_uid || '—').replace(/"/g, '""')}"`
     ]);
@@ -199,76 +276,165 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Header & Controls */}
       <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '14px',
         background: 'var(--bg-surface)',
-        padding: '16px 20px',
+        padding: '18px 20px',
         borderRadius: 'var(--radius-md)',
-        border: '1px solid var(--border-subtle)'
+        border: '1px solid var(--border-subtle)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '14px'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{
-            background: 'var(--brand-primary-bg)',
-            padding: '8px',
-            borderRadius: '8px',
-            border: '1px solid var(--brand-primary-border)'
-          }}>
-            <Package size={20} color="var(--brand-primary)" />
-          </div>
-          <div>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
-              Active Placements & Physical Assets Registry
-            </h2>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Detailed audit trail of items registered by verified employees at the kiosk and verified in the Red Tag Area.
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '14px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{
+              background: 'var(--brand-primary-bg)',
+              padding: '8px',
+              borderRadius: '8px',
+              border: '1px solid var(--brand-primary-border)'
+            }}>
+              <Package size={20} color="var(--brand-primary)" />
             </div>
+            <div>
+              <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
+                PLACEMENTS & ASSET REGISTRY
+              </h2>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Comprehensive Registry of Placed Objects, RFID Badges & Containment States
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={fetchPlacements}
+              disabled={isLoading}
+              className="btn btn-outline btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              title="Refresh placements from database"
+            >
+              <RefreshCw size={13} className={isLoading ? 'spin' : ''} />
+              <span>Refresh</span>
+            </button>
+
+            <button
+              onClick={exportCSV}
+              disabled={filteredPlacements.length === 0}
+              className="btn btn-outline btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+              title="Export filtered placements as CSV"
+            >
+              <Download size={14} />
+              <span>Export CSV</span>
+            </button>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        {/* Filter Toolbar (Consistent with Events Page) */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          flexWrap: 'wrap',
+          padding: '10px 14px',
+          background: 'var(--bg-muted)',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border-subtle)'
+        }}>
           {/* Search Bar */}
-          <div style={{ position: 'relative' }}>
-            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', minWidth: '220px', flex: '1 1 200px' }}>
+            <Search size={14} color="var(--text-dim)" style={{ position: 'absolute', left: '10px', pointerEvents: 'none' }} />
             <input
               type="text"
-              placeholder="Search by name, item, serial..."
+              placeholder="Search by name, item, serial, UID..."
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
               style={{
-                padding: '7px 12px 7px 32px',
+                width: '100%',
+                padding: '6px 10px 6px 32px',
+                fontSize: '0.78rem',
                 borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--bg-muted)',
-                color: 'var(--text-primary)',
-                fontSize: '0.8rem',
-                minWidth: '220px'
+                border: '1px solid var(--border-medium)',
+                background: '#FFFFFF'
               }}
             />
           </div>
 
-          <button
-            onClick={fetchPlacements}
-            disabled={isLoading}
-            className="btn btn-outline btn-sm"
-            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-          >
-            <RefreshCw size={13} className={isLoading ? 'spin' : ''} />
-            <span>Refresh</span>
-          </button>
+          {/* Authorization Filter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)' }}>AUTHORIZATION:</span>
+            <select
+              value={authFilter}
+              onChange={(e) => setAuthFilter(e.target.value)}
+              style={{ fontSize: '0.75rem', padding: '5px 8px', borderRadius: '4px', border: '1px solid var(--border-medium)', background: '#FFFFFF' }}
+            >
+              <option value="ALL">All Placements (Everything)</option>
+              <option value="AUTHORIZED">Authorized Only</option>
+              <option value="UNAUTHORIZED">Unauthorized / Unidentified</option>
+              <option value="NO_RFID">Missing RFID</option>
+            </select>
+          </div>
 
-          <button
-            onClick={exportCSV}
-            disabled={filteredPlacements.length === 0}
-            className="btn btn-outline btn-sm"
-            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-            title="Export filtered placements as CSV"
-          >
-            <Download size={14} />
-            <span>Export CSV Report</span>
-          </button>
+          {/* State Filter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)' }}>STATE:</span>
+            <select
+              value={stateFilter}
+              onChange={(e) => setStateFilter(e.target.value)}
+              style={{ fontSize: '0.75rem', padding: '5px 8px', borderRadius: '4px', border: '1px solid var(--border-medium)', background: '#FFFFFF' }}
+            >
+              <option value="ALL">All States</option>
+              <option value="PRESENT">Active in Area</option>
+              <option value="REMOVED">Removed / Historical</option>
+            </select>
+          </div>
+
+          {/* Date Filter */}
+          <DateRangeFilter
+            startDate={startDate}
+            endDate={endDate}
+            onStartDateChange={setStartDate}
+            onEndDateChange={setEndDate}
+            onApply={handleApplyDateRange}
+            quickPreset={quickPreset}
+            onQuickPresetChange={handleQuickPreset}
+          />
+
+          {/* Reset Filters Shortcut */}
+          {hasActiveFilters && (
+            <button
+              onClick={resetFilters}
+              style={{
+                fontSize: '0.72rem',
+                color: 'var(--brand-red)',
+                background: 'rgba(220, 38, 38, 0.08)',
+                border: '1px solid rgba(220, 38, 38, 0.25)',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 600
+              }}
+              title="Reset all filters to show everything"
+            >
+              Reset Filters
+            </button>
+          )}
+
+          {/* Record Count */}
+          <span style={{
+            fontSize: '0.72rem',
+            color: 'var(--text-muted)',
+            marginLeft: 'auto',
+            fontWeight: 600,
+            whiteSpace: 'nowrap'
+          }}>
+            Showing {filteredPlacements.length} of {placements.length}
+          </span>
         </div>
       </div>
 
@@ -283,26 +449,25 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
             <thead>
               <tr style={{ background: 'var(--bg-muted)', borderBottom: '1px solid var(--border-subtle)', textAlign: 'left' }}>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Name</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Department</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Item</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Serial / ID</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Reason</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)' }}>Placed At</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'center' }}>Evidence</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'right' }}>Action</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Status</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Item & ID</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Employee / RFID</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Department</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Reason</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)' }}>Placed At</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'center' }}>Evidence</th>
+                <th style={{ padding: '12px 14px', fontWeight: 700, color: 'var(--text-muted)', textAlign: 'right' }}>Action</th>
               </tr>
             </thead>
             <tbody>
               {filteredPlacements.length === 0 ? (
                 <tr>
-                  <td colSpan="8" style={{ padding: '36px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                    {isLoading ? 'Loading placement records...' : 'No placement records found.'}
+                  <td colSpan="8" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    {isLoading ? 'Loading placement records...' : 'No placement records match the selected filters.'}
                   </td>
                 </tr>
               ) : (
                 filteredPlacements.map((p) => {
-                  const isPresent = p.state === 'PRESENT';
                   const isAuth = p.authorization_status === 'AUTHORIZED';
 
                   return (
@@ -315,59 +480,101 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-hover)')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      {/* Name */}
-                      <td style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        {p.employee_name || 'Unidentified'}
-                        {p.employee_id && (
-                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-                            {p.employee_id}
-                          </div>
+                      {/* Status */}
+                      <td style={{ padding: '12px 14px' }}>
+                        {isAuth ? (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: 'var(--success-bg)',
+                            color: 'var(--success)',
+                            border: '1px solid var(--success-border)',
+                            padding: '3px 8px',
+                            borderRadius: '4px',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap'
+                          }}>
+                            ✓ Authorized
+                          </span>
+                        ) : (
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            background: 'var(--brand-red-bg)',
+                            color: 'var(--brand-red)',
+                            border: '1px solid var(--brand-red-border)',
+                            padding: '3px 8px',
+                            borderRadius: '4px',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap'
+                          }}>
+                            ⚠ Unauthorized
+                          </span>
                         )}
                       </td>
 
+                      {/* Item & ID */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {p.item_name || 'Unlabeled Object'}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          {p.serial_number || p.object_id}
+                        </div>
+                      </td>
+
+                      {/* Employee / Submitter */}
+                      <td style={{ padding: '12px 14px' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {p.employee_name || 'Unidentified'}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {p.employee_id ? `ID: ${p.employee_id}` : (p.rfid_uid ? `RFID: ${p.rfid_uid}` : 'No Badge')}
+                        </div>
+                      </td>
+
                       {/* Department */}
-                      <td style={{ padding: '12px 16px', color: 'var(--text-secondary)' }}>
+                      <td style={{ padding: '12px 14px', color: 'var(--text-secondary)' }}>
                         <span style={{
                           background: 'var(--bg-muted)',
-                          padding: '3px 8px',
+                          padding: '2px 7px',
                           borderRadius: '4px',
-                          fontSize: '0.75rem',
+                          fontSize: '0.72rem',
                           border: '1px solid var(--border-subtle)'
                         }}>
                           {p.department || 'General'}
                         </span>
                       </td>
 
-                      {/* Item */}
-                      <td style={{ padding: '12px 16px', fontWeight: 700, color: 'var(--text-primary)' }}>
-                        {p.item_name}
-                      </td>
-
-                      {/* Serial */}
-                      <td style={{ padding: '12px 16px', fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                        {p.serial_number || '—'}
-                      </td>
-
                       {/* Reason */}
-                      <td style={{ padding: '12px 16px', color: 'var(--text-secondary)', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td style={{ padding: '12px 14px', color: 'var(--text-secondary)', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {p.placement_reason || '—'}
                       </td>
 
                       {/* Placed At */}
-                      <td style={{ padding: '12px 16px', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
-                        {formatTimestamp(p.placed_at)}
+                      <td style={{ padding: '12px 14px', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                        <div>{formatTimestamp(p.placed_at || p.registered_at || p.first_seen)}</div>
+                        {p.placement_duration_min && (
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                            Window: {p.placement_duration_min}m
+                          </div>
+                        )}
                       </td>
 
                       {/* Evidence */}
-                      <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                      <td style={{ padding: '12px 14px', textAlign: 'center' }}>
                         {p.evidence_image ? (
                           <button
                             onClick={() => setSelectedPlacement(p)}
                             style={{
                               background: 'transparent',
-                              border: '1px solid var(--brand-primary-border)',
-                              color: 'var(--brand-primary)',
-                              padding: '4px 8px',
+                              border: '1px solid var(--border-medium)',
+                              color: 'var(--info)',
+                              padding: '3px 8px',
                               borderRadius: '4px',
                               cursor: 'pointer',
                               fontSize: '0.72rem',
@@ -380,12 +587,12 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                             <span>View</span>
                           </button>
                         ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>None</span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>—</span>
                         )}
                       </td>
 
                       {/* Action */}
-                      <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                      <td style={{ padding: '12px 14px', textAlign: 'right' }}>
                         <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
                           <button
                             onClick={() => setSelectedPlacement(p)}
@@ -408,7 +615,7 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                               borderColor: 'rgba(37, 99, 235, 0.35)',
                               background: 'rgba(37, 99, 235, 0.05)'
                             }}
-                            title="Download object details"
+                            title="Download placement record JSON"
                           >
                             <Download size={13} />
                           </button>
@@ -563,15 +770,6 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
                   </div>
                   <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '3px' }}>
                     {selectedPlacement.item_name}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
-                    Serial No.
-                  </div>
-                  <div style={{ fontSize: '0.95rem', fontFamily: 'monospace', color: 'var(--text-secondary)', marginTop: '3px' }}>
-                    {selectedPlacement.serial_number || '—'}
                   </div>
                 </div>
 
