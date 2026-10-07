@@ -327,13 +327,13 @@ export default function KPIMetricsBar({
           width: '42px',
           height: '42px',
           borderRadius: 'var(--radius-sm)',
-          background: unauthPlacements.length > 0 ? 'var(--brand-red-bg)' : 'var(--bg-muted)',
-          border: `1px solid ${unauthPlacements.length > 0 ? 'var(--brand-red-border)' : 'var(--border-subtle)'}`,
+          background: unauthCount > 0 ? 'var(--brand-red-bg)' : 'var(--bg-muted)',
+          border: `1px solid ${unauthCount > 0 ? 'var(--brand-red-border)' : 'var(--border-subtle)'}`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center'
         }}>
-          <AlertTriangle size={20} color={unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-dim)'} />
+          <AlertTriangle size={20} color={unauthCount > 0 ? 'var(--brand-red)' : 'var(--text-dim)'} />
         </div>
       </div>
 
