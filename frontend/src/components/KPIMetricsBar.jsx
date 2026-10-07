@@ -50,15 +50,19 @@ export default function KPIMetricsBar({
       loadPlacements();
     };
     socket.on('placement_deleted', handleUpdate);
+    socket.on('placements_updated', handleUpdate);
     socket.on('kiosk_placement_success', handleUpdate);
     socket.on('placement_authorized', handleUpdate);
     socket.on('object_registered', handleUpdate);
+    socket.on('object_removed', handleUpdate);
     socket.on('new_event_logged', handleUpdate);
     return () => {
       socket.off('placement_deleted', handleUpdate);
+      socket.off('placements_updated', handleUpdate);
       socket.off('kiosk_placement_success', handleUpdate);
       socket.off('placement_authorized', handleUpdate);
       socket.off('object_registered', handleUpdate);
+      socket.off('object_removed', handleUpdate);
       socket.off('new_event_logged', handleUpdate);
     };
   }, [socket, loadPlacements]);

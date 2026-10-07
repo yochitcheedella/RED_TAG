@@ -1056,6 +1056,29 @@ export function getPlacements(limit = 200) {
   `).all(limit);
 }
 
+export function getPlacementStats(startDate = null, endDate = null) {
+  let query = `
+    SELECT 
+      COUNT(*) as total_placements,
+      COALESCE(SUM(CASE WHEN authorization_status = 'AUTHORIZED' THEN 1 ELSE 0 END), 0) as authorized_count,
+      COALESCE(SUM(CASE WHEN authorization_status != 'AUTHORIZED' THEN 1 ELSE 0 END), 0) as unauthorized_count,
+      COALESCE(SUM(CASE WHEN state = 'PRESENT' THEN 1 ELSE 0 END), 0) as active_present_count,
+      COALESCE(SUM(CASE WHEN state = 'REMOVED' THEN 1 ELSE 0 END), 0) as removed_count
+    FROM objects
+    WHERE 1=1
+  `;
+  const params = [];
+  if (startDate) {
+    query += ` AND date(COALESCE(registered_at, last_seen, first_seen)) >= date(?)`;
+    params.push(startDate);
+  }
+  if (endDate) {
+    query += ` AND date(COALESCE(registered_at, last_seen, first_seen)) <= date(?)`;
+    params.push(endDate);
+  }
+  return db.prepare(query).get(...params);
+}
+
 export function getObjectById(id) {
   return db.prepare('SELECT * FROM objects WHERE id = ?').get(id);
 }

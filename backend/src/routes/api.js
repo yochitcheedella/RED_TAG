@@ -28,6 +28,7 @@ import {
   expireOldKioskRegistrations,
   expireKioskRegistration,
   getPlacements,
+  getPlacementStats,
   deletePlacement,
   deleteEvent,
   clearEvents,
@@ -367,9 +368,16 @@ router.post('/rfid/toggle-status', requireAdmin, (req, res) => {
   res.json({ success: true, employee: updated });
 });
 
+// Placements Aggregate Statistics (Real-time accurate counts for KPI cards & reports)
+router.get(['/admin/placements/stats', '/placements/stats'], requireSupervisor, (req, res) => {
+  const { startDate, endDate } = req.query;
+  const stats = getPlacementStats(startDate, endDate);
+  res.json({ success: true, ...stats });
+});
+
 // Placements View (Supervisor & Admin Monitoring)
 router.get(['/admin/placements', '/placements'], requireSupervisor, (req, res) => {
-  const limit = parseInt(req.query.limit || '100', 10);
+  const limit = parseInt(req.query.limit || '500', 10);
   const placements = getPlacements(limit);
   res.json(placements);
 });
@@ -381,6 +389,7 @@ router.delete(['/admin/placements/:id', '/placements/:id'], requireAdmin, (req, 
     deletePlacement(id);
     if (visionService?.io) {
       visionService.io.emit('placement_deleted', { id, objectId: id });
+      visionService.io.emit('placements_updated', { action: 'deleted', id });
     }
     res.json({ success: true, message: 'Placement record deleted successfully.' });
   } catch (err) {

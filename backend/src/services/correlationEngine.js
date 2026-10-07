@@ -691,6 +691,7 @@ class CorrelationEngine {
       }
 
       this.io.emit('object_registered', objectRecord);
+      this.io.emit('placements_updated', { action: 'registered', object: objectRecord });
       this.io.emit('new_event_logged', savedEvent);
     }
 
@@ -929,6 +930,7 @@ class CorrelationEngine {
       });
 
       this.io.emit('object_registered', objectRecord);
+      this.io.emit('placements_updated', { action: 'registered', object: objectRecord });
       this.io.emit('new_event_logged', savedEvent);
     }
 

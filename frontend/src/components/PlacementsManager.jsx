@@ -25,16 +25,20 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
     };
 
     socket.on('placement_deleted', handlePlacementDeleted);
+    socket.on('placements_updated', handlePlacementUpdate);
     socket.on('kiosk_placement_success', handlePlacementUpdate);
     socket.on('placement_authorized', handlePlacementUpdate);
     socket.on('object_registered', handlePlacementUpdate);
+    socket.on('object_removed', handlePlacementUpdate);
     socket.on('new_event_logged', handlePlacementUpdate);
 
     return () => {
       socket.off('placement_deleted', handlePlacementDeleted);
+      socket.off('placements_updated', handlePlacementUpdate);
       socket.off('kiosk_placement_success', handlePlacementUpdate);
       socket.off('placement_authorized', handlePlacementUpdate);
       socket.off('object_registered', handlePlacementUpdate);
+      socket.off('object_removed', handlePlacementUpdate);
       socket.off('new_event_logged', handlePlacementUpdate);
     };
   }, [socket, adminToken]);

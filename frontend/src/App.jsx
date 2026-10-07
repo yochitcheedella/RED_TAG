@@ -266,6 +266,7 @@ export default function App() {
           }, ...prev];
         });
       }
+      fetchAdminData();
     });
 
     s.on('placement_unauthorized_alert', (data) => {
@@ -274,6 +275,7 @@ export default function App() {
       if (data.event) {
         setEvents(prev => [data.event, ...prev.filter(e => e.id !== data.eventId)]);
       }
+      fetchAdminData();
     });
 
     // Catch-all: add any new event the backend logs (authorized or unauthorized)
@@ -286,6 +288,27 @@ export default function App() {
       }
     });
 
+    // Real-Time Placement Registry Synchronization
+    s.on('object_registered', (obj) => {
+      if (obj && (obj.id || obj.object_id)) {
+        const objId = obj.object_id || obj.id;
+        setPlacements(prev => {
+          const exists = prev.some(p => (p.object_id === objId || p.id === objId));
+          if (exists) return prev.map(p => (p.object_id === objId || p.id === objId ? { ...p, ...obj } : p));
+          return [{ ...obj, object_id: objId }, ...prev];
+        });
+      }
+      fetchAdminData();
+    });
+
+    s.on('placements_updated', () => {
+      fetchAdminData();
+    });
+
+    s.on('kiosk_placement_success', () => {
+      fetchAdminData();
+    });
+
     s.on('object_removed', (data) => {
       setActiveObjects(prev => prev.filter(o =>
         o.id !== data.objectId &&
@@ -293,6 +316,7 @@ export default function App() {
         o.object_type !== data.label &&
         o.objectType !== data.label
       ));
+      fetchAdminData();
     });
 
     // Real-Time Deletion Synchronization across all open clients (Admin & Operator)
@@ -315,7 +339,9 @@ export default function App() {
       const delId = data?.id || data?.objectId;
       if (delId) {
         setActiveObjects(prev => prev.filter(o => o.id !== delId && o.objectId !== delId));
+        setPlacements(prev => prev.filter(p => p.object_id !== delId && p.id !== delId));
       }
+      fetchAdminData();
     });
 
     s.on('employee_deleted', (data) => {
