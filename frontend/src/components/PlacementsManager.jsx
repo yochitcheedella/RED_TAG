@@ -48,7 +48,7 @@ export default function PlacementsManager({ adminToken, userRole = 'admin', sock
   const fetchPlacements = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/admin/placements?limit=100', {
+      const res = await fetch('/api/admin/placements?limit=500', {
         headers: {
           'Authorization': `Bearer ${adminToken}`
         }

@@ -1,14 +1,67 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Package, ShieldCheck, AlertTriangle, Activity } from 'lucide-react';
 import DateRangeFilter from './DateRangeFilter';
 import { isWithinDateRange, computePresetDates, formatYMD } from '../utils/dateFilterUtils';
 
-export default function KPIMetricsBar({ events = [], systemStatus, cameraActive = false }) {
+export default function KPIMetricsBar({
+  placements: externalPlacements = [],
+  events = [],
+  systemStatus,
+  cameraActive = false,
+  adminToken,
+  socket
+}) {
+  const [internalPlacements, setInternalPlacements] = useState(externalPlacements || []);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [appliedStartDate, setAppliedStartDate] = useState(() => formatYMD(new Date()));
   const [appliedEndDate, setAppliedEndDate] = useState(() => formatYMD(new Date()));
   const [quickPreset, setQuickPreset] = useState('TODAY');
+
+  useEffect(() => {
+    if (Array.isArray(externalPlacements) && externalPlacements.length > 0) {
+      setInternalPlacements(externalPlacements);
+    }
+  }, [externalPlacements]);
+
+  // Load placements from backend to ensure metrics match the Placements registry exactly
+  const loadPlacements = useCallback(async () => {
+    try {
+      const token = adminToken || sessionStorage.getItem('redtag_admin_token') || localStorage.getItem('redtag_admin_token');
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const res = await fetch('/api/admin/placements?limit=500', { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) setInternalPlacements(data);
+      }
+    } catch (_) {}
+  }, [adminToken]);
+
+  useEffect(() => {
+    if (!externalPlacements || externalPlacements.length === 0) {
+      loadPlacements();
+    }
+  }, [externalPlacements, loadPlacements]);
+
+  // Real-time synchronization via socket when placements update
+  useEffect(() => {
+    if (!socket) return;
+    const handleUpdate = () => {
+      loadPlacements();
+    };
+    socket.on('placement_deleted', handleUpdate);
+    socket.on('kiosk_placement_success', handleUpdate);
+    socket.on('placement_authorized', handleUpdate);
+    socket.on('object_registered', handleUpdate);
+    socket.on('new_event_logged', handleUpdate);
+    return () => {
+      socket.off('placement_deleted', handleUpdate);
+      socket.off('kiosk_placement_success', handleUpdate);
+      socket.off('placement_authorized', handleUpdate);
+      socket.off('object_registered', handleUpdate);
+      socket.off('new_event_logged', handleUpdate);
+    };
+  }, [socket, loadPlacements]);
 
   const handleApplyDateRange = () => {
     setAppliedStartDate(startDate);
@@ -30,12 +83,34 @@ export default function KPIMetricsBar({ events = [], systemStatus, cameraActive 
     setAppliedEndDate(end);
   };
 
-  // Filter placement events by applied range
-  const rangeEvents = events.filter(e => isWithinDateRange(e.timestamp, appliedStartDate, appliedEndDate));
+  // Determine active dataset: prefer placements registry, fallback to events
+  const activePlacementsList = (Array.isArray(internalPlacements) && internalPlacements.length > 0)
+    ? internalPlacements
+    : (Array.isArray(externalPlacements) && externalPlacements.length > 0 ? externalPlacements : []);
 
-  const authPlacements = rangeEvents.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT');
-  const unauthPlacements = rangeEvents.filter(e => e.event_type === 'UNAUTHORIZED_PLACEMENT');
-  const totalPlacements = authPlacements.length + unauthPlacements.length;
+  const usePlacements = activePlacementsList.length > 0;
+
+  // Filter placements by applied range (same exact matching logic as PlacementsManager)
+  const rangePlacements = usePlacements
+    ? activePlacementsList.filter((p) => {
+        const rawDate = p.placed_at || p.registered_at || p.first_seen || p.last_seen || p.timestamp || '';
+        return isWithinDateRange(rawDate, appliedStartDate, appliedEndDate);
+      })
+    : [];
+
+  const rangeEvents = !usePlacements
+    ? events.filter(e => isWithinDateRange(e.timestamp, appliedStartDate, appliedEndDate) && (e.event_type === 'AUTHORIZED_PLACEMENT' || e.event_type === 'UNAUTHORIZED_PLACEMENT'))
+    : [];
+
+  const totalPlacements = usePlacements ? rangePlacements.length : rangeEvents.length;
+
+  const authCount = usePlacements
+    ? rangePlacements.filter(p => p.authorization_status === 'AUTHORIZED' || p.is_authorized || p.isAuthorized).length
+    : rangeEvents.filter(e => e.event_type === 'AUTHORIZED_PLACEMENT').length;
+
+  const unauthCount = usePlacements
+    ? rangePlacements.filter(p => p.authorization_status !== 'AUTHORIZED' && !p.is_authorized && !p.isAuthorized).length
+    : rangeEvents.filter(e => e.event_type === 'UNAUTHORIZED_PLACEMENT').length;
 
   // System status calculation based on real camera + RFID + AI
   const isCameraOnline = cameraActive;
@@ -184,7 +259,7 @@ export default function KPIMetricsBar({ events = [], systemStatus, cameraActive 
             marginTop: '4px',
             fontFamily: 'var(--font-mono)'
           }}>
-            {authPlacements.length}
+            {authCount}
           </div>
           <div style={{
             fontSize: '0.75rem',
@@ -228,18 +303,18 @@ export default function KPIMetricsBar({ events = [], systemStatus, cameraActive 
           <div style={{
             fontSize: '1.75rem',
             fontWeight: 800,
-            color: unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-primary)',
+            color: unauthCount > 0 ? 'var(--brand-red)' : 'var(--text-primary)',
             lineHeight: 1.15,
             marginTop: '4px',
             fontFamily: 'var(--font-mono)'
           }}>
-            {unauthPlacements.length}
+            {unauthCount}
           </div>
           <div style={{
             fontSize: '0.75rem',
-            color: unauthPlacements.length > 0 ? 'var(--brand-red)' : 'var(--text-muted)',
+            color: unauthCount > 0 ? 'var(--brand-red)' : 'var(--text-muted)',
             marginTop: '4px',
-            fontWeight: unauthPlacements.length > 0 ? 600 : 400
+            fontWeight: unauthCount > 0 ? 600 : 400
           }}>
             action required
           </div>

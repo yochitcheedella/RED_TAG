@@ -52,6 +52,7 @@ export default function App() {
   ]);
   const [telemetry, setTelemetry] = useState(null);
   const [events, setEvents] = useState([]);
+  const [placements, setPlacements] = useState([]);
   const [settings, setSettings] = useState(null);
   const [activeObjects, setActiveObjects] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -92,13 +93,14 @@ export default function App() {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     try {
-      const [statusRes, eventsRes, settingsRes, polyRes, activeRes, employeesRes] = await Promise.all([
+      const [statusRes, eventsRes, settingsRes, polyRes, activeRes, employeesRes, placementsRes] = await Promise.all([
         fetch('/api/status').then(r => r.json()).catch(() => null),
         fetch('/api/events?limit=200', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
         fetch('/api/settings', { headers }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch('/api/config/polygon').then(r => r.json()).catch(() => null),
         fetch('/api/objects/active', { headers }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/employees', { headers }).then(r => r.ok ? r.json() : []).catch(() => [])
+        fetch('/api/employees', { headers }).then(r => r.ok ? r.json() : []).catch(() => []),
+        fetch('/api/admin/placements?limit=500', { headers }).then(r => r.ok ? r.json() : []).catch(() => [])
       ]);
 
       if (statusRes) {
@@ -121,6 +123,9 @@ export default function App() {
       }
       if (Array.isArray(employeesRes)) {
         setEmployees(employeesRes);
+      }
+      if (Array.isArray(placementsRes)) {
+        setPlacements(placementsRes);
       }
     } catch (err) {
       console.warn('Admin data fetch error:', err.message);
@@ -635,9 +640,12 @@ export default function App() {
           >
             {/* Four Primary KPI Cards */}
             <KPIMetricsBar
+              placements={placements}
               events={events}
               systemStatus={systemStatus}
               cameraActive={cameraActive}
+              adminToken={adminToken}
+              socket={socket}
             />
 
             {/* Main Live Monitoring Area (Full Width Professional Dashboard) */}
